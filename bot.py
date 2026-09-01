@@ -1,8 +1,9 @@
 """
 WCHS-IST: İstanbul Havalimanı Otonom Transfer & Kapı Radarı
-Tamamen "İSTEĞE BAĞLI (ON-DEMAND)" Mod:
-- Arkada sessiz bekler, 5 dakikada bir otomatik mesaj ATMAZ.
-- Yalnızca sen Telegram'dan butona bastığında veya kapı yazdığında İGA'yı sorgular ve kart basar.
+Güncellemeler:
+- Kalan süre artık kalkış anından ŞU ANKİ ANLIK SAAT çıkartılarak gerçek dakika olarak hesaplanır.
+- Şehir isimleri ve Geliş başlığı sarı ve kahve/vurgulu etiketlerle belirginleştirildi.
+- "Net Pay" terimi sahadaki operatörün anlayacağı "Emniyet Payı (Boşta Kalan Zaman)" olarak sadeleştirildi.
 """
 
 import json
@@ -62,7 +63,6 @@ def fetch_iga_direct_flights():
     global cached_flights
     now_ist = get_now_ist()
 
-    # 60 saniyelik önbellek (kullanıcı arka arkaya butona basarsa sistemi yormasın)
     if time.time() - cached_flights["time"] < 60 and cached_flights["arrivals"]:
         return now_ist, cached_flights["arrivals"], cached_flights["departures"], cached_flights["source"]
 
@@ -176,7 +176,10 @@ def fetch_iga_direct_flights():
     cached_flights = {"time": time.time(), "arrivals": arrivals, "departures": departures, "source": "iGA Canlı FIDS"}
     return now_ist, arrivals, departures, "iGA Canlı FIDS"
 
-def calc_transfer_metrics(arr_gate: str, dep_gate: str, delta_min: float):
+def calc_transfer_metrics(arr_gate: str, dep_gate: str, rem_now_min: float):
+    """
+    rem_now_min: Şu andan itibaren uçağın kalkışına kalan GERÇEK dakika.
+    """
     arr_p = arr_gate[0].upper() if arr_gate else "?"
     dep_p = dep_gate[0].upper() if dep_gate else "?"
 
@@ -206,16 +209,16 @@ def calc_transfer_metrics(arr_gate: str, dep_gate: str, delta_min: float):
         walk_min = 12
         tag = "🟡 STANDART"
 
-    # Risk Hesabı
-    net_margin = delta_min - walk_min - 20
-    if net_margin <= 20:
-        risk_str = f"🚨 ÇOK ACİL (Net Pay: {int(net_margin)} dk)"
+    # Emniyet Payı (Boşta Kalan Zaman) = Kalan Süre - Yürüme - 20 dk Boarding Kapanış Payı
+    safety_margin = rem_now_min - walk_min - 20
+    if safety_margin <= 15:
+        risk_str = f"🚨 <b>ÇOK ACİL (Emniyet Payı: {int(safety_margin)} dk)</b>"
         risk_level = 1
-    elif net_margin <= 45:
-        risk_str = f"⚠️ DİKKAT (Net Pay: {int(net_margin)} dk)"
+    elif safety_margin <= 35:
+        risk_str = f"⚠️ <b>DİKKAT (Emniyet Payı: {int(safety_margin)} dk)</b>"
         risk_level = 2
     else:
-        risk_str = f"✅ RAHAT (Net Pay: {int(net_margin)} dk)"
+        risk_str = f"✅ <b>RAHAT (Emniyet Payı: {int(safety_margin)} dk)</b>"
         risk_level = 3
 
     return walk_min, tag, risk_str, risk_level
@@ -296,14 +299,19 @@ def execute_radar(custom_gate=None, target_flight=None):
         status_text = (
             f"🛬 <b>İndi ({abs(diff_now)} dk önce - {arr_time.strftime('%H:%M')})</b>"
             if diff_now <= 0 else
-            f"✈️ <b>Havada (Tahmini: {arr_time.strftime('%H:%M')})</b>"
+            f"✈️ <b>Havada (Tahmini İniş: {arr_time.strftime('%H:%M')})</b>"
         )
 
         connections = []
         for dep in departures:
-            delta_min = (dep["dep_time"] - arr_time).total_seconds() / 60
-            if 35 <= delta_min <= 180:
-                walk_min, tag, risk_str, risk_level = calc_transfer_metrics(arr_gate, dep["gate"], delta_min)
+            # Transfer aralığı: Uçağın iniş saatine göre +35 dk ile +180 dk arası kalkışlar
+            delta_arr = (dep["dep_time"] - arr_time).total_seconds() / 60
+            # ŞU ANKİ ANLIK SAATE göre kalan dakika:
+            rem_now_min = (dep["dep_time"] - now_ist).total_seconds() / 60
+
+            # Sadece henüz kalkmamış veya kalkışına en az 10 dk olanlar
+            if 35 <= delta_arr <= 180 and rem_now_min > 5:
+                walk_min, tag, risk_str, risk_level = calc_transfer_metrics(arr_gate, dep["gate"], rem_now_min)
 
                 if CONFIG["filter_mode"] == "CRITICAL" and risk_level != 1:
                     continue
@@ -312,7 +320,7 @@ def execute_radar(custom_gate=None, target_flight=None):
                     "flight": dep["flight_no"],
                     "dest": dep["dest"],
                     "time": dep["dep_time"].strftime("%H:%M"),
-                    "remaining": int(delta_min),
+                    "rem_now": int(rem_now_min),
                     "gate": dep["gate"],
                     "walk_min": walk_min,
                     "tag": tag,
@@ -320,21 +328,22 @@ def execute_radar(custom_gate=None, target_flight=None):
                     "risk_level": risk_level
                 })
 
-        connections.sort(key=lambda x: (x["risk_level"], x["remaining"]))
+        connections.sort(key=lambda x: (x["risk_level"], x["rem_now"]))
 
         if connections:
+            # Geliş başlığı kahverengi/vurgulu, Şehirler sarı renkli etiket
             card = (
-                f"🛬 <b>GELİŞ: {arr_flight} | {origin}</b> ➔ KAPI: <code>{arr_gate}</code>\n"
+                f"🟤 <b>[GELİŞ]</b> <code>{arr_flight}</code> | 🟨 <code>{origin}</code> ➔ KAPI: <b><code>{arr_gate}</code></b>\n"
                 f"📊 <b>Durum:</b> {status_text} | {arr['status']}\n"
                 f"─────────────────────────────────\n"
-                f"📤 <b>BAĞLANTILI GİDİŞLER ({len(connections)} bağlantı):</b>\n"
+                f"📤 <b>BAĞLANTILI GİDİŞLER ({len(connections)} uçuş):</b>\n"
             )
             for idx, c in enumerate(connections[:3], 1):
                 card += (
-                    f"<b>{idx}️⃣ 🛫 {c['flight']} ➔ {c['dest']} | KAPI: <code>{c['gate']}</code></b>\n"
-                    f"   • Kalkış: <b>{c['time']}</b> (Kalan: <b>{c['remaining']} dk</b>)\n"
-                    f"   • Mesafe: <code>{arr_gate}</code> ➔ <code>{c['gate']}</code> (~<b>{c['walk_min']} dk</b> | {c['tag']})\n"
-                    f"   • Durum: {c['risk_str']}\n"
+                    f"<b>{idx}️⃣ 🛫 <code>{c['flight']}</code> ➔ 🟨 <code>{c['dest']}</code> | KAPI: <code>{c['gate']}</code></b>\n"
+                    f"   • Kalkış: <b>{c['time']}</b> (Şu andan Kalan: <b>{c['rem_now']} dk</b>)\n"
+                    f"   • İntikal: <code>{arr_gate}</code> ➔ <code>{c['gate']}</code> (~<b>{c['walk_min']} dk</b> | {c['tag']})\n"
+                    f"   • {c['risk_str']}\n"
                 )
             cards.append(card)
 
@@ -417,13 +426,8 @@ def handle_telegram_updates():
     except Exception as e:
         print(f"[!] Telegram update hatası: {e}", flush=True)
 
-# ==============================================================================
-# SESSİZ DİNLEME MODU (OTOMATİK SPAM YOK - SADECE BUTONLA ÇALIŞIR)
-# ==============================================================================
 if __name__ == "__main__":
-    print("[*] WCHS-IST Radar sessiz modda aktif (Sadece sen butona bastığında kart basacak)...", flush=True)
-    
-    # 7/24 arkada sessizce bekler, hiçbir otomatik mesaj ATMAZ.
+    print("[*] WCHS-IST Radar sessiz modda aktif...", flush=True)
     while True:
         handle_telegram_updates()
         time.sleep(1)
