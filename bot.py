@@ -1,8 +1,6 @@
 """
-WCHS-IST: Istanbul Havalimani Otonom Transfer & Kapi Radari
-Cift Motorlu Mimari:
-  1. Oncelikli: Resmi iGA (IST / LTFM) Canli FIDS Motoru (Sifir gecikme, gercek kapilar)
-  2. Otomatik Yedek: AeroDataBox API (PythonAnywhere Ucretsiz Proxy engeline karsi kesintisiz yedek)
+WCHS-IST: İstanbul Havalimanı Otonom Transfer & Kapı Radarı
+Resmi iGA (IST / LTFM) Canlı FIDS Motoru (Cloudflare Bridge Destekli)
 """
 
 import json
@@ -14,7 +12,6 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-# Windows konsol UTF-8 destegi
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -22,16 +19,10 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-# ==============================================================================
-# 1. KONFIGURASYON VE SABITLER
-# ==============================================================================
 TELEGRAM_BOT_TOKEN = "8629069082:AAHNKyakE_5GuZTdUg5lgyBA1n7JsQez-1o"
 TELEGRAM_CHAT_ID = "968928191"
 
-RAPIDAPI_KEY = "bddbb6c608msh8578cfed9dd4a52p19b5cbjsn5f69bdd7a51f"
-RAPIDAPI_HOST = "aerodatabox.p.rapidapi.com"
-
-# One-Stop Security (Avrupa + ABD + Kanada Havalimanlari)
+# One-Stop Security (Avrupa + ABD + Kanada Havalimanları)
 OSS_AIRPORTS = {
     "FRA", "MUC", "BER", "CDG", "AMS", "LHR", "LGW", "MAN", "BHX", "EDI",
     "VIE", "ZRH", "GVA", "FCO", "MXP", "BLQ", "VCE", "NAP", "MAD", "BCN", 
@@ -42,42 +33,37 @@ OSS_AIRPORTS = {
 }
 
 CONFIG = {
-    "filter_mode": "ALL",       # "ALL", "CRITICAL"
-    "selected_pier": None,      # None, "A", "B", "D", "E", "F"
-    "only_international": True  # Ic hatlari (G kapilari) varsayilan olarak eler
+    "filter_mode": "ALL",
+    "selected_pier": None,
+    "only_international": True
 }
 
 last_update_id = 0
 cached_flights = {"time": 0, "arrivals": [], "departures": [], "source": ""}
+# Saha operatörünün manuel atadığı kapılar: {"TK1944": "F4"}
+custom_flight_gates = {}
 
-
-# ==============================================================================
-# 2. YARDIMCI FONKSIYONLAR & ZAMAN HESAPLAMA
-# ==============================================================================
 def get_now_ist() -> datetime:
-    """Turkiye (IST / UTC+3) canli saatini dondurur."""
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=3)
-
 
 def parse_iso_dt(val):
     if not val or not isinstance(val, str):
         return None
     try:
         clean = val.replace(" ", "T")
-        if "+" in clean:
-            clean = clean.split("+")[0]
-        if clean.endswith("Z"):
-            clean = clean[:-1]
+        if "+" in clean: clean = clean.split("+")[0]
+        if clean.endswith("Z"): clean = clean[:-1]
         return datetime.fromisoformat(clean)
     except Exception:
         return None
 
-
-# ==============================================================================
-# 3. MOTOR 1: IGA RESMI CANLI FIDS API (ONCELIKLI)
-# ==============================================================================
-def _fetch_iga_engine():
+def fetch_iga_direct_flights():
+    global cached_flights
     now_ist = get_now_ist()
+
+    if time.time() - cached_flights["time"] < 180 and cached_flights["arrivals"]:
+        return now_ist, cached_flights["arrivals"], cached_flights["departures"], cached_flights["source"]
+
     url = "https://wild-lake-8cfa.haciyatmaz300.workers.dev/"
     
     ctx = ssl.create_default_context()
@@ -96,210 +82,99 @@ def _fetch_iga_engine():
             "clickedButton": button
         }
         encoded = urllib.parse.urlencode(payload).encode("utf-8")
-        ref = (
-            "https://www.istairport.com/ucuslar/ucus-bilgileri/gelen-ucuslar"
-            if nature == 0 else
-            "https://www.istairport.com/ucuslar/ucus-bilgileri/giden-ucuslar"
-        )
         req = urllib.request.Request(
             url,
             data=encoded,
             headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-                "Accept": "application/json, text/javascript, */*; q=0.01",
-                "Accept-Language": "tr,en-US;q=0.9,en;q=0.8",
-                "Referer": ref,
-                "Origin": "https://www.istairport.com",
-                "X-Requested-With": "XMLHttpRequest"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
             }
         )
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as resp:
+        with urllib.request.urlopen(req, timeout=12, context=ctx) as resp:
             return json.loads(resp.read().decode("utf-8", errors="replace"))
 
     arrivals = []
     seen_arr = set()
-    data_arr = _post(nature=0, page_size=40)
-    raw_arr = data_arr.get("result", {}).get("data", {}).get("flights", [])
-    for item in raw_arr:
-        origin_iata = str(item.get("fromCityCode") or "").strip().upper()
-        if origin_iata in OSS_AIRPORTS:
-            arr_dt = parse_iso_dt(item.get("estimatedDatetime")) or parse_iso_dt(item.get("scheduledDatetime"))
-            if arr_dt:
-                flight_no = str(item.get("flightNumber", "TK")).strip().upper()
-                dedup_key = f"{origin_iata}_{arr_dt.strftime('%H%M')}_{flight_no}"
-                if dedup_key not in seen_arr:
-                    seen_arr.add(dedup_key)
-                    gate = str(item.get("gate") or "").strip()
-                    gate_val = gate if gate and gate not in ("", "-", "None") else "F/E Bölgesi (Tahmini)"
-                    arrivals.append({
-                        "flight_no": flight_no,
-                        "origin_name": f"{item.get('fromCityName', '')} ({origin_iata})",
-                        "origin_iata": origin_iata,
-                        "arr_time": arr_dt,
-                        "gate": gate_val,
-                        "status": item.get("remark") or "Planlandı"
-                    })
+    try:
+        data_arr = _post(nature=0, page_size=40)
+        raw_arr = data_arr.get("result", {}).get("data", {}).get("flights", [])
+        for item in raw_arr:
+            origin_iata = str(item.get("fromCityCode") or "").strip().upper()
+            if origin_iata in OSS_AIRPORTS:
+                arr_dt = parse_iso_dt(item.get("estimatedDatetime")) or parse_iso_dt(item.get("scheduledDatetime"))
+                if arr_dt:
+                    flight_no = str(item.get("flightNumber", "TK")).strip().upper()
+                    dedup_key = f"{origin_iata}_{arr_dt.strftime('%H%M')}_{flight_no}"
+                    if dedup_key not in seen_arr:
+                        seen_arr.add(dedup_key)
+                        gate_raw = str(item.get("gate") or "").strip()
+                        carousel = str(item.get("carousel") or "").strip()
+                        
+                        # Eğer operatör önceden kapı atadıysa onu al
+                        if flight_no in custom_flight_gates:
+                            gate_val = custom_flight_gates[flight_no]
+                        elif gate_raw and gate_raw not in ("", "-", "None"):
+                            gate_val = gate_raw
+                        else:
+                            gate_val = f"F/E (Bant: {carousel})" if carousel else "F/E Bölgesi"
+
+                        arrivals.append({
+                            "flight_no": flight_no,
+                            "origin_name": f"{item.get('fromCityName', '')} ({origin_iata})",
+                            "origin_iata": origin_iata,
+                            "arr_time": arr_dt,
+                            "gate": gate_val,
+                            "carousel": carousel,
+                            "status": item.get("remark") or "Planlandı"
+                        })
+    except Exception as e:
+        print(f"[!] Geliş hatası: {e}", flush=True)
 
     departures = []
     seen_dep = set()
-    data_dep = _post(nature=1, page_size=40)
-    raw_dep = data_dep.get("result", {}).get("data", {}).get("flights", [])
-    last_date = raw_dep[-1].get("scheduledDatetime") if raw_dep else ""
-    if last_date:
-        try:
-            data_dep2 = _post(nature=1, page_size=40, start_date=last_date, button="moreFlight")
-            raw_dep.extend(data_dep2.get("result", {}).get("data", {}).get("flights", []))
-        except Exception:
-            pass
+    try:
+        data_dep = _post(nature=1, page_size=40)
+        raw_dep = data_dep.get("result", {}).get("data", {}).get("flights", [])
+        last_date = raw_dep[-1].get("scheduledDatetime") if raw_dep else ""
+        if last_date:
+            try:
+                data_dep2 = _post(nature=1, page_size=40, start_date=last_date, button="moreFlight")
+                raw_dep.extend(data_dep2.get("result", {}).get("data", {}).get("flights", []))
+            except Exception:
+                pass
 
-    for item in raw_dep:
-        dest_iata = str(item.get("toCityCode") or "").strip().upper()
-        dep_dt = parse_iso_dt(item.get("scheduledDatetime")) or parse_iso_dt(item.get("estimatedDatetime"))
-        gate = str(item.get("gate") or "").strip()
-        gate_val = gate if gate and gate not in ("", "-", "None") else "Belirsiz"
+        for item in raw_dep:
+            dest_iata = str(item.get("toCityCode") or "").strip().upper()
+            dep_dt = parse_iso_dt(item.get("scheduledDatetime")) or parse_iso_dt(item.get("estimatedDatetime"))
+            gate = str(item.get("gate") or "").strip()
+            gate_val = gate if gate and gate not in ("", "-", "None") else "Belirsiz"
 
-        if CONFIG["only_international"] and gate_val.startswith("G"):
-            continue
+            if CONFIG["only_international"] and gate_val.startswith("G"):
+                continue
 
-        if dep_dt:
-            flight_no = str(item.get("flightNumber", "TK")).strip().upper()
-            dedup_key = f"{dest_iata}_{dep_dt.strftime('%H%M')}_{flight_no}"
-            if dedup_key not in seen_dep:
-                seen_dep.add(dedup_key)
-                departures.append({
-                    "flight_no": flight_no,
-                    "dest": f"{item.get('toCityName', '')} ({dest_iata})",
-                    "dest_iata": dest_iata,
-                    "dep_time": dep_dt,
-                    "gate": gate_val,
-                    "counter": item.get("counter", ""),
-                    "status": item.get("remark", "")
-                })
+            if dep_dt:
+                flight_no = str(item.get("flightNumber", "TK")).strip().upper()
+                dedup_key = f"{dest_iata}_{dep_dt.strftime('%H%M')}_{flight_no}"
+                if dedup_key not in seen_dep:
+                    seen_dep.add(dedup_key)
+                    departures.append({
+                        "flight_no": flight_no,
+                        "dest": f"{item.get('toCityName', '')} ({dest_iata})",
+                        "dest_iata": dest_iata,
+                        "dep_time": dep_dt,
+                        "gate": gate_val,
+                        "counter": item.get("counter", ""),
+                        "status": item.get("remark", "")
+                    })
+    except Exception as e:
+        print(f"[!] Gidiş hatası: {e}", flush=True)
 
     arrivals.sort(key=lambda x: x["arr_time"])
     departures.sort(key=lambda x: x["dep_time"])
+
+    cached_flights = {"time": time.time(), "arrivals": arrivals, "departures": departures, "source": "iGA Canlı FIDS"}
     return now_ist, arrivals, departures, "iGA Canlı FIDS"
 
-
-# ==============================================================================
-# 4. MOTOR 2: AERODATABOX YEDEK MOTOR (PYTHONANYWHERE PROXY KESINTISIZ YEDEK)
-# ==============================================================================
-def _fetch_aerodatabox_fallback():
-    now_ist = get_now_ist()
-    from_time = (now_ist - timedelta(minutes=25)).strftime("%Y-%m-%dT%H:%M")
-    to_time = (now_ist + timedelta(hours=3, minutes=30)).strftime("%Y-%m-%dT%H:%M")
-
-    url = f"https://aerodatabox.p.rapidapi.com/flights/airports/icao/LTFM/{from_time}/{to_time}"
-    req = urllib.request.Request(
-        f"{url}?withDepartures=true&withArrivals=true&withLocation=false",
-        headers={
-            "x-rapidapi-host": RAPIDAPI_HOST,
-            "x-rapidapi-key": RAPIDAPI_KEY,
-            "User-Agent": "Mozilla/5.0"
-        }
-    )
-    with urllib.request.urlopen(req, timeout=12) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-
-    raw_arr = data.get("arrivals", [])
-    raw_dep = data.get("departures", [])
-
-    arrivals = []
-    seen_arr = set()
-    for item in raw_arr:
-        mov = item.get("movement", {})
-        airport_info = mov.get("airport", {})
-        origin_iata = airport_info.get("iata", "")
-        if origin_iata in OSS_AIRPORTS:
-            arr_str = mov.get("actualTimeLocal") or mov.get("revisedTimeLocal") or mov.get("scheduledTimeLocal")
-            arr_dt = parse_iso_dt(arr_str)
-            if arr_dt:
-                flight_no = str(item.get("number", "TK")).strip().upper()
-                dedup_key = f"{origin_iata}_{arr_dt.strftime('%H%M')}_{flight_no}"
-                if dedup_key not in seen_arr:
-                    seen_arr.add(dedup_key)
-                    gate = mov.get("gate") or item.get("gate") or "F/E Bölgesi (Tahmini)"
-                    arrivals.append({
-                        "flight_no": flight_no,
-                        "origin_name": f"{airport_info.get('name', origin_iata)} ({origin_iata})",
-                        "origin_iata": origin_iata,
-                        "arr_time": arr_dt,
-                        "gate": gate,
-                        "status": item.get("status", "Landed")
-                    })
-
-    departures = []
-    seen_dep = set()
-    for item in raw_dep:
-        mov = item.get("movement", {})
-        airport_info = mov.get("airport", {})
-        dep_str = mov.get("actualTimeLocal") or mov.get("revisedTimeLocal") or mov.get("scheduledTimeLocal")
-        dep_dt = parse_iso_dt(dep_str)
-        gate = mov.get("gate") or item.get("gate") or "Belirsiz"
-
-        if CONFIG["only_international"] and gate.startswith("G"):
-            continue
-
-        if dep_dt:
-            flight_no = str(item.get("number", "TK")).strip().upper()
-            dest_iata = airport_info.get("iata", "")
-            dedup_key = f"{dest_iata}_{dep_dt.strftime('%H%M')}_{flight_no}"
-            if dedup_key not in seen_dep:
-                seen_dep.add(dedup_key)
-                departures.append({
-                    "flight_no": flight_no,
-                    "dest": f"{airport_info.get('name', '')} ({dest_iata})",
-                    "dest_iata": dest_iata,
-                    "dep_time": dep_dt,
-                    "gate": gate,
-                    "counter": "",
-                    "status": item.get("status", "")
-                })
-
-    arrivals.sort(key=lambda x: x["arr_time"])
-    departures.sort(key=lambda x: x["dep_time"])
-    return now_ist, arrivals, departures, "AeroDataBox Yedek Motor"
-
-
-# ==============================================================================
-# 5. AKILLI VERI MOTORU (OTOMATIK GECISLI)
-# ==============================================================================
-def fetch_iga_direct_flights():
-    """
-    1. Oncelikli olarak iGA FIDS sunucusuna baglanir.
-    2. Eger sunucu/proxy engeli varsa otomatik olarak AeroDataBox yedege gecer.
-    """
-    global cached_flights
-    now_ist = get_now_ist()
-
-    # 180 saniyelik onbellek
-    if time.time() - cached_flights["time"] < 180 and cached_flights["arrivals"]:
-        return now_ist, cached_flights["arrivals"], cached_flights["departures"], cached_flights["source"]
-
-    # 1. iGA Canli Denemesi
-    try:
-        now_ist, arrivals, departures, source = _fetch_iga_engine()
-        if arrivals and departures:
-            cached_flights = {"time": time.time(), "arrivals": arrivals, "departures": departures, "source": source}
-            return now_ist, arrivals, departures, source
-    except Exception as e:
-        print(f"[!] iGA erisimi saglanamadi ({e}), AeroDataBox yedege geciliyor...", flush=True)
-
-    # 2. AeroDataBox Yedek Denemesi
-    try:
-        now_ist, arrivals, departures, source = _fetch_aerodatabox_fallback()
-        cached_flights = {"time": time.time(), "arrivals": arrivals, "departures": departures, "source": source}
-        return now_ist, arrivals, departures, source
-    except Exception as e:
-        print(f"[!] AeroDataBox yedege de erisilemedi: {e}", flush=True)
-
-    return now_ist, [], [], "Baglanti Hatasi"
-
-
-# ==============================================================================
-# 6. INTIKAL MATRISI VE RISK HESAPLAMA
-# ==============================================================================
 def calc_transfer_metrics(arr_gate: str, dep_gate: str, delta_min: float):
     arr_p = arr_gate[0].upper() if arr_gate else "?"
     dep_p = dep_gate[0].upper() if dep_gate else "?"
@@ -309,7 +184,7 @@ def calc_transfer_metrics(arr_gate: str, dep_gate: str, delta_min: float):
     arr_num = int(arr_match[0]) if arr_match else 5
     dep_num = int(dep_match[0]) if dep_match else 5
 
-    # 1. Mesafe & Intikal Suresi
+    # İskele Yürüme Süresi
     if (arr_p in {"E", "F"} and dep_p in {"A", "B"}) or (arr_p in {"A", "B"} and dep_p in {"E", "F"}):
         walk_min = 22
         tag = "🔴 UZAK BLOK"
@@ -330,7 +205,7 @@ def calc_transfer_metrics(arr_gate: str, dep_gate: str, delta_min: float):
         walk_min = 12
         tag = "🟡 STANDART"
 
-    # 2. Risk Hesabi: Net Pay = Kalan Sure - Intikal - 20 dk Boarding Kapanisi
+    # Risk Hesabı: Net Pay = Kalan Süre - İntikal - 20 dk Boarding Kapanışı
     net_margin = delta_min - walk_min - 20
     if net_margin <= 20:
         risk_str = f"🚨 ÇOK ACİL (Net Pay: {int(net_margin)} dk)"
@@ -344,10 +219,6 @@ def calc_transfer_metrics(arr_gate: str, dep_gate: str, delta_min: float):
 
     return walk_min, tag, risk_str, risk_level
 
-
-# ==============================================================================
-# 7. TELEGRAM ENTEGRASYONU VE KART ARAYUZU
-# ==============================================================================
 def get_main_keyboard():
     return {
         "keyboard": [
@@ -358,7 +229,6 @@ def get_main_keyboard():
         "resize_keyboard": True
     }
 
-
 def get_pier_keyboard():
     return {
         "keyboard": [
@@ -368,7 +238,6 @@ def get_pier_keyboard():
         ],
         "resize_keyboard": True
     }
-
 
 def send_telegram(text: str, reply_markup=None):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -388,24 +257,25 @@ def send_telegram(text: str, reply_markup=None):
         with urllib.request.urlopen(req, timeout=10) as resp:
             pass
     except Exception as e:
-        print(f"[!] Telegram gonderim hatasi: {e}", flush=True)
+        print(f"[!] Telegram gönderim hatası: {e}", flush=True)
 
-
-def execute_radar(custom_gate=None):
+def execute_radar(custom_gate=None, target_flight=None):
     now_ist, arrivals, departures, source = fetch_iga_direct_flights()
 
     filter_info = CONFIG["filter_mode"]
     if CONFIG["selected_pier"]:
         filter_info += f" | İskele: {CONFIG['selected_pier']}"
+    if target_flight:
+        filter_info += f" | Uçuş: {target_flight}"
 
     header = (
-        f"🕒 <b>CANLI SAAT: {now_ist.strftime('%H:%M')} ({source})</b>\n"
+        f"🕒 <b>CANLI SAAT: {now_ist.strftime('%H:%M')} (IST - {source})</b>\n"
         f"🎯 <b>Filtre:</b> <code>{filter_info}</code>\n"
         "═════════════════════════════════\n"
     )
 
     if not arrivals or not departures:
-        send_telegram(header + "⚠️ <b>Hata:</b> Uçuş verisi çekilemedi. Lütfen bağlantıyı kontrol edin.")
+        send_telegram(header + "⚠️ <b>Hata:</b> Uçuş verisi çekilemedi.")
         return
 
     cards = []
@@ -415,7 +285,9 @@ def execute_radar(custom_gate=None):
         arr_time = arr["arr_time"]
         arr_gate = custom_gate or arr["gate"]
 
-        # İskele filtreleme
+        if target_flight and arr_flight != target_flight:
+            continue
+
         if CONFIG["selected_pier"] and not arr_gate.startswith(CONFIG["selected_pier"]):
             continue
 
@@ -454,7 +326,7 @@ def execute_radar(custom_gate=None):
                 f"🛬 <b>GELİŞ: {arr_flight} | {origin}</b> ➔ KAPI: <code>{arr_gate}</code>\n"
                 f"📊 <b>Durum:</b> {status_text} | {arr['status']}\n"
                 f"─────────────────────────────────\n"
-                f"📤 <b>BAĞLANTILI GİDİŞLER:</b>\n"
+                f"📤 <b>BAĞLANTILI GİDİŞLER ({len(connections)} bağlantı):</b>\n"
             )
             for idx, c in enumerate(connections[:3], 1):
                 card += (
@@ -470,7 +342,6 @@ def execute_radar(custom_gate=None):
         send_telegram(full_msg)
     else:
         send_telegram(header + "ℹ️ Şu anda bu kriterlere uyan aktif OSS aktarması bulunamadı.")
-
 
 def handle_telegram_updates():
     global last_update_id
@@ -488,43 +359,54 @@ def handle_telegram_updates():
 
         for update in data.get("result", []):
             last_update_id = update["update_id"]
-            text = update.get("message", {}).get("text", "").strip()
-            if not text:
+            raw_text = update.get("message", {}).get("text", "").strip()
+            if not raw_text:
                 continue
 
-            # 1. Sahadan ozel kapi girisi (Orn: F7, E4, A2, B8, G5A, D3)
-            clean_text = text.upper().replace(" ", "")
+            # 1. Belirli bir uçuşa kapı atama (Örn: "TK1944 F4" veya "TK 1944 F4")
+            m_flight_gate = re.match(r"^(TK\s*\d+)\s+([A-G]\d+[A-Z]?)$", raw_text.upper())
+            if m_flight_gate:
+                f_code = m_flight_gate.group(1).replace(" ", "")
+                g_code = m_flight_gate.group(2)
+                custom_flight_gates[f_code] = g_code
+                cached_flights["time"] = 0
+                send_telegram(f"✅ <b>{f_code}</b> uçuşunun geliş kapısı <b>{g_code}</b> olarak atandı! Rota hesaplanıyor...")
+                execute_radar(target_flight=f_code)
+                continue
+
+            # 2. Genel kapı girişi (Örn: "F4", "F7", "E3", "A2")
+            clean_text = raw_text.upper().replace(" ", "")
             if re.match(r"^[A-G]\d+[A-Z]?$", clean_text):
                 gate_entered = clean_text
                 send_telegram(f"🎯 <b>Kapı {gate_entered} için Anlık Aktarma Hesaplanıyor...</b>")
                 execute_radar(custom_gate=gate_entered)
 
-            # 2. Ana Menu Butonlari
-            elif text in ["🛬 Şu Anki İnişler", "🔄 Ekranı Yenile", "/tara", "/simdi", "📋 Tüm Aktarmalar"]:
+            # 3. Ana Menü Butonları
+            elif raw_text in ["🛬 Şu Anki İnişler", "🔄 Ekranı Yenile", "/tara", "/simdi", "📋 Tüm Aktarmalar"]:
                 CONFIG["filter_mode"] = "ALL"
                 CONFIG["selected_pier"] = None
                 cached_flights["time"] = 0
                 execute_radar()
 
-            elif text in ["🚨 Acil / Kritik (<70 dk)", "/kritik"]:
+            elif raw_text in ["🚨 Acil / Kritik (<70 dk)", "/kritik"]:
                 CONFIG["filter_mode"] = "CRITICAL"
                 CONFIG["selected_pier"] = None
                 cached_flights["time"] = 0
                 send_telegram("🚨 <b>Yalnızca Acil / Yüksek Riskli Aktarmalar Filtrelendi!</b>")
                 execute_radar()
 
-            elif text in ["🚪 İskele Seç (A-B-D-E-F)", "/iskele"]:
+            elif raw_text in ["🚪 İskele Seç (A-B-D-E-F)", "/iskele"]:
                 send_telegram("📍 <b>Lütfen takip etmek istediğiniz iskeleyi seçin:</b>", reply_markup=get_pier_keyboard())
 
-            elif text.startswith("📍 İskele "):
-                pier = text.replace("📍 İskele ", "").strip().upper()
+            elif raw_text.startswith("📍 İskele "):
+                pier = raw_text.replace("📍 İskele ", "").strip().upper()
                 CONFIG["selected_pier"] = pier
                 CONFIG["filter_mode"] = "ALL"
                 cached_flights["time"] = 0
                 send_telegram(f"🎯 <b>{pier} İskelesi Filtrelendi.</b>", reply_markup=get_main_keyboard())
                 execute_radar()
 
-            elif text in ["🌐 Tüm İskeleler", "🔙 Ana Menü"]:
+            elif raw_text in ["🌐 Tüm İskeleler", "🔙 Ana Menü"]:
                 CONFIG["selected_pier"] = None
                 CONFIG["filter_mode"] = "ALL"
                 cached_flights["time"] = 0
@@ -532,17 +414,14 @@ def handle_telegram_updates():
                 execute_radar()
 
     except Exception as e:
-        print(f"[!] Telegram update hatasi: {e}", flush=True)
+        print(f"[!] Telegram update hatası: {e}", flush=True)
 
-
-# ==============================================================================
-# 8. ANA CALISTIRICI (7/24 OTONOM DONGU)
-# ==============================================================================
 if __name__ == "__main__":
-    print("[*] WCHS-IST Akilli Radar baslatiliyor...", flush=True)
+    print("[*] WCHS-IST Akıllı Radar başlatılıyor...", flush=True)
     send_telegram(
-        "🚀 <b>WCHS Akıllı Radar Aktif!</b>\n\n"
-        "• İniş kapısını doğrudan yazarak (örn: <code>F7</code> veya <code>E3</code>) anında rota alabilirsin.\n"
+        "🚀 <b>WCHS Akıllı Radar Aktif! (iGA Canlı FIDS Motoru)</b>\n\n"
+        "• Doğrudan kapı yazarak (örn: <code>F7</code> veya <code>E3</code>) o kapıya özel rota alabilirsin.\n"
+        "• Uçuşa kapı atamak için <code>TK1944 F4</code> yazabilirsin.\n"
         "• Butonlar üzerinden acil aktarmaları ve iskeleleri filtreleyebilirsin."
     )
     execute_radar()
@@ -550,7 +429,6 @@ if __name__ == "__main__":
     last_scan = time.time()
     while True:
         handle_telegram_updates()
-        # 5 dakikada bir otomatik radar taramasi
         if time.time() - last_scan > 300:
             execute_radar()
             last_scan = time.time()
