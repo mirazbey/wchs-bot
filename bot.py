@@ -78,7 +78,7 @@ def parse_iso_dt(val):
 # ==============================================================================
 def _fetch_iga_engine():
     now_ist = get_now_ist()
-    url = "https://www.istairport.com/umbraco/api/FlightInfo/GetFlightStatusBoard"
+    url = "https://wild-lake-8cfa.haciyatmaz300.workers.dev/"
     
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
