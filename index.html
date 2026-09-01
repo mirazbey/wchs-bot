@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>WCHS-IST Radar</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    :root {
+      --bg-color: #0b0f19;
+      --card-bg: #151d30;
+      --card-border: #222f4c;
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --accent: #38bdf8;
+      --danger: #ef4444;
+      --danger-bg: rgba(239, 68, 68, 0.15);
+      --warning: #f59e0b;
+      --warning-bg: rgba(245, 158, 11, 0.15);
+      --success: #10b981;
+      --success-bg: rgba(16, 185, 129, 0.15);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    body { background: var(--bg-color); color: var(--text-main); padding: 12px; padding-bottom: 30px; font-size: 14px; }
+    
+    .header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid var(--card-border); margin-bottom: 12px; }
+    .title-box h1 { font-size: 16px; font-weight: 700; color: #fff; display: flex; align-items: center; gap: 6px; }
+    .title-box p { font-size: 11px; color: var(--text-muted); }
+    .clock-badge { background: #1e293b; border: 1px solid #334155; padding: 4px 8px; border-radius: 6px; font-size: 12px; font-weight: 600; color: var(--accent); }
+
+    .search-box { display: flex; gap: 8px; margin-bottom: 12px; }
+    .gate-input { flex: 1; background: #1e293b; border: 1px solid var(--card-border); border-radius: 8px; padding: 10px 12px; color: #fff; font-size: 14px; font-weight: 600; text-transform: uppercase; outline: none; }
+    .gate-input::placeholder { color: #64748b; font-weight: 400; text-transform: none; }
+    .btn-action { background: var(--accent); color: #000; border: none; border-radius: 8px; padding: 0 16px; font-weight: 700; font-size: 13px; cursor: pointer; }
+    .btn-action:active { transform: scale(0.97); opacity: 0.9; }
+
+    .filter-scroll { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 12px; scrollbar-width: none; }
+    .filter-scroll::-webkit-scrollbar { display: none; }
+    .filter-chip { background: #1e293b; border: 1px solid #334155; padding: 6px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; color: var(--text-muted); white-space: nowrap; cursor: pointer; }
+    .filter-chip.active { background: var(--accent); color: #000; border-color: var(--accent); }
+    .filter-chip.critical { border-color: var(--danger); color: var(--danger); }
+    .filter-chip.critical.active { background: var(--danger); color: #fff; }
+
+    .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 12px; padding: 12px; margin-bottom: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.25); }
+    .card-top { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+    .flight-tag { font-size: 15px; font-weight: 800; color: #fff; }
+    .origin-tag { font-size: 13px; color: #cbd5e1; margin-top: 2px; }
+    .gate-badge { background: #3b82f6; color: #fff; padding: 4px 10px; border-radius: 6px; font-weight: 800; font-size: 13px; letter-spacing: 0.5px; }
+    .status-row { font-size: 11px; color: var(--text-muted); display: flex; align-items: center; gap: 6px; padding-bottom: 8px; border-bottom: 1px dashed var(--card-border); margin-bottom: 10px; }
+
+    .connections-header { font-size: 11px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; display: flex; justify-content: space-between; }
+    .dep-item { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; }
+    .dep-row-1 { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+    .dep-flight { font-weight: 700; font-size: 13px; color: #fff; }
+    .dep-gate-badge { background: #1e293b; border: 1px solid #475569; padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 700; color: #38bdf8; }
+    .dep-dest { font-size: 12px; color: #cbd5e1; margin-bottom: 4px; }
+    .dep-metrics { display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--text-muted); }
+    
+    .risk-badge { font-size: 11px; font-weight: 700; padding: 2px 6px; border-radius: 4px; }
+    .risk-1 { background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.4); }
+    .risk-2 { background: var(--warning-bg); color: var(--warning); border: 1px solid rgba(245, 158, 11, 0.4); }
+    .risk-3 { background: var(--success-bg); color: var(--success); border: 1px solid rgba(16, 185, 129, 0.4); }
+
+    .loader { text-align: center; padding: 40px 0; color: var(--text-muted); font-size: 14px; }
+    .empty-state { text-align: center; padding: 30px 15px; color: var(--text-muted); font-size: 13px; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="title-box">
+      <h1>✈️ WCHS-IST Radar</h1>
+      <p id="subStatus">iGA Canlı FIDS Bağlantısı</p>
+    </div>
+    <div class="clock-badge" id="liveClock">--:-- IST</div>
+  </div>
+
+  <div class="search-box">
+    <input type="text" id="gateInput" class="gate-input" placeholder="İniş Kapısı Yaz (örn: F7, E4, A2)...">
+    <button class="btn-action" onclick="applyCustomGate()">Rota Çıkar</button>
+  </div>
+
+  <div class="filter-scroll">
+    <div class="filter-chip active" onclick="setFilter('ALL', this)">🌐 Tümü</div>
+    <div class="filter-chip critical" onclick="setFilter('CRITICAL', this)">🚨 Kritik (&lt;70 dk)</div>
+    <div class="filter-chip" onclick="setFilter('A', this)">İskele A</div>
+    <div class="filter-chip" onclick="setFilter('B', this)">İskele B</div>
+    <div class="filter-chip" onclick="setFilter('D', this)">İskele D</div>
+    <div class="filter-chip" onclick="setFilter('E', this)">İskele E</div>
+    <div class="filter-chip" onclick="setFilter('F', this)">İskele F</div>
+  </div>
+
+  <div id="cardsContainer">
+    <div class="loader">📡 Canlı uçuş verileri çekiliyor...</div>
+  </div>
+
+  <script>
+    if (window.Telegram && window.Telegram.WebApp) {
+      window.Telegram.WebApp.ready();
+      window.Telegram.WebApp.expand();
+    }
+
+    const OSS_AIRPORTS = new Set([
+      "FRA", "MUC", "BER", "CDG", "AMS", "LHR", "LGW", "MAN", "BHX", "EDI",
+      "VIE", "ZRH", "GVA", "FCO", "MXP", "BLQ", "VCE", "NAP", "MAD", "BCN", 
+      "BRU", "DUS", "HAM", "STR", "PRG", "WAW", "BUD", "CPH", "ARN", "OSL", 
+      "HEL", "LIS", "ATH", "DUB", "LYS", "NCE", "MRS", "HAJ", "CGN", "NUE",
+      "JFK", "EWR", "ORD", "LAX", "MIA", "SFO", "BOS", "IAD", "IAH", "DFW", 
+      "ATL", "SEA", "DTW", "PHL", "DEN", "YYZ", "YUL", "YVR"
+    ]);
+
+    let state = {
+      filterMode: "ALL",
+      customGate: null,
+      arrivals: [],
+      departures: []
+    };
+
+    function updateClock() {
+      const now = new Date();
+      const istTime = new Date(now.getTime() + (now.getTimezoneOffset() + 180) * 60000);
+      const timeStr = istTime.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      document.getElementById("liveClock").innerText = `${timeStr} IST`;
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    function calcTransferMetrics(arrGate, depGate, deltaMin) {
+      const arrP = (arrGate && arrGate.length > 0) ? arrGate[0].toUpperCase() : "?";
+      const depP = (depGate && depGate.length > 0) ? depGate[0].toUpperCase() : "?";
+
+      let arrNum = 5, depNum = 5;
+      const mArr = arrGate.match(/\d+/);
+      const mDep = depGate.match(/\d+/);
+      if (mArr) arrNum = parseInt(mArr[0]);
+      if (mDep) depNum = parseInt(mDep[0]);
+
+      let walkMin = 12;
+      let tag = "🟡 STANDART";
+
+      if ((['E', 'F'].includes(arrP) && ['A', 'B'].includes(depP)) || (['A', 'B'].includes(arrP) && ['E', 'F'].includes(depP))) {
+        walkMin = 22; tag = "🔴 UZAK BLOK";
+      } else if ((['A', 'B'].includes(arrP) && ['A', 'B'].includes(depP)) || (['E', 'F'].includes(arrP) && ['E', 'F'].includes(depP))) {
+        if (arrP === depP) {
+          walkMin = Math.abs(arrNum - depNum) <= 3 ? 4 : 8;
+          tag = "🟢 AYNI İSKELE";
+        } else {
+          walkMin = 15; tag = "🟡 ORTA / ÇAPRAZ";
+        }
+      } else if (arrP === 'D' || depP === 'D') {
+        walkMin = 10; tag = "🟡 ORTA MESAFE";
+      } else if (depP === 'G') {
+        walkMin = 18; tag = "🔵 İÇ HATLAR (G)";
+      }
+
+      const netMargin = deltaMin - walkMin - 20;
+      let riskStr = `✅ RAHAT (${Math.round(netMargin)} dk)`;
+      let riskLevel = 3;
+
+      if (netMargin <= 20) {
+        riskStr = `🚨 ÇOK ACİL (${Math.round(netMargin)} dk)`;
+        riskLevel = 1;
+      } else if (netMargin <= 45) {
+        riskStr = `⚠️ DİKKAT (${Math.round(netMargin)} dk)`;
+        riskLevel = 2;
+      }
+
+      return { walkMin, tag, riskStr, riskLevel };
+    }
+
+    async function fetchFlightData() {
+      try {
+        const postData = (nature, pageSize = 40) => {
+          return new URLSearchParams({
+            nature: nature.toString(),
+            searchTerm: "",
+            pageSize: pageSize.toString(),
+            isInternational: "1",
+            date: "",
+            endDate: "",
+            culture: "tr",
+            clickedButton: ""
+          });
+        };
+
+        const [arrRes, depRes] = await Promise.all([
+          fetch("https://www.istairport.com/umbraco/api/FlightInfo/GetFlightStatusBoard", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+            body: postData(0, 40)
+          }).then(r => r.json()),
+          fetch("https://www.istairport.com/umbraco/api/FlightInfo/GetFlightStatusBoard", {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8" },
+            body: postData(1, 40)
+          }).then(r => r.json())
+        ]);
+
+        const rawArr = (arrRes.result && arrRes.result.data) ? arrRes.result.data.flights : [];
+        const rawDep = (depRes.result && depRes.result.data) ? depRes.result.data.flights : [];
+
+        state.arrivals = [];
+        const seenArr = new Set();
+        rawArr.forEach(item => {
+          const originIata = (item.fromCityCode || "").trim().toUpperCase();
+          if (OSS_AIRPORTS.has(originIata)) {
+            const timeStr = item.estimatedDatetime || item.scheduledDatetime;
+            if (timeStr) {
+              const dt = new Date(timeStr);
+              const key = `${originIata}_${dt.getTime()}_${item.flightNumber}`;
+              if (!seenArr.has(key)) {
+                seenArr.add(key);
+                state.arrivals.push({
+                  flightNo: item.flightNumber || "TK",
+                  originName: `${item.fromCityName || ""} (${originIata})`,
+                  originIata: originIata,
+                  arrTime: dt,
+                  gate: (item.gate && item.gate.trim() && item.gate.trim() !== "-") ? item.gate.trim() : "F/E Bölgesi",
+                  status: item.remark || "Planlandı"
+                });
+              }
+            }
+          }
+        });
+
+        state.departures = [];
+        const seenDep = new Set();
+        rawDep.forEach(item => {
+          const destIata = (item.toCityCode || "").trim().toUpperCase();
+          const gate = (item.gate && item.gate.trim() && item.gate.trim() !== "-") ? item.gate.trim() : "Belirsiz";
+          if (!gate.startsWith("G")) {
+            const timeStr = item.scheduledDatetime || item.estimatedDatetime;
+            if (timeStr) {
+              const dt = new Date(timeStr);
+              const key = `${destIata}_${dt.getTime()}_${item.flightNumber}`;
+              if (!seenDep.has(key)) {
+                seenDep.add(key);
+                state.departures.push({
+                  flightNo: item.flightNumber || "TK",
+                  dest: `${item.toCityName || ""} (${destIata})`,
+                  destIata: destIata,
+                  depTime: dt,
+                  gate: gate,
+                  status: item.remark || ""
+                });
+              }
+            }
+          }
+        });
+
+        state.arrivals.sort((a, b) => a.arrTime - b.arrTime);
+        state.departures.sort((a, b) => a.depTime - b.depTime);
+        renderCards();
+      } catch (err) {
+        console.error("Fetch hatası:", err);
+        document.getElementById("cardsContainer").innerHTML = `
+          <div class="empty-state">
+            <p>⚠️ İGA FIDS verisi yüklenemedi.</p>
+            <p style="font-size:11px; margin-top:6px; color:#ef4444;">${err.message}</p>
+            <button class="btn-action" style="margin-top:12px;" onclick="fetchFlightData()">Tekrar Dene</button>
+          </div>
+        `;
+      }
+    }
+
+    function renderCards() {
+      const container = document.getElementById("cardsContainer");
+      const now = new Date();
+      const istTime = new Date(now.getTime() + (now.getTimezoneOffset() + 180) * 60000);
+
+      let cardsHtml = "";
+      let count = 0;
+
+      state.arrivals.forEach(arr => {
+        const arrGate = state.customGate || arr.gate;
+
+        if (state.filterMode !== "ALL" && state.filterMode !== "CRITICAL") {
+          if (!arrGate.startsWith(state.filterMode)) return;
+        }
+
+        const diffNowMin = Math.round((arr.arrTime - istTime) / 60000);
+        const statusText = diffNowMin <= 0 ? `🛬 İndi (${Math.abs(diffNowMin)} dk önce)` : `✈️ Havada (Tahmini: ${arr.arrTime.toLocaleTimeString("tr-TR", {hour:'2-digit', minute:'2-digit'})})`;
+
+        const connections = [];
+        state.departures.forEach(dep => {
+          const deltaMin = (dep.depTime - arr.arrTime) / 60000;
+          if (deltaMin >= 35 && deltaMin <= 180) {
+            const metrics = calcTransferMetrics(arrGate, dep.gate, deltaMin);
+            if (state.filterMode === "CRITICAL" && metrics.riskLevel !== 1) return;
+
+            connections.push({
+              flight: dep.flightNo,
+              dest: dep.dest,
+              time: dep.depTime.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }),
+              remaining: Math.round(deltaMin),
+              gate: dep.gate,
+              ...metrics
+            });
+          }
+        });
+
+        connections.sort((a, b) => (a.riskLevel - b.riskLevel) || (a.remaining - b.remaining));
+
+        if (connections.length > 0) {
+          count++;
+          let depListHtml = "";
+          connections.slice(0, 4).forEach((c, idx) => {
+            depListHtml += `
+              <div class="dep-item">
+                <div class="dep-row-1">
+                  <span class="dep-flight">${idx + 1}. 🛫 ${c.flight}</span>
+                  <span class="dep-gate-badge">KAPI: ${c.gate}</span>
+                </div>
+                <div class="dep-dest">${c.dest}</div>
+                <div class="dep-metrics">
+                  <span>🕒 ${c.time} (${c.remaining} dk) • ~${c.walkMin} dk ${c.tag}</span>
+                  <span class="risk-badge risk-${c.riskLevel}">${c.riskStr}</span>
+                </div>
+              </div>
+            `;
+          });
+
+          cardsHtml += `
+            <div class="card">
+              <div class="card-top">
+                <div>
+                  <div class="flight-tag">🛬 ${arr.flightNo}</div>
+                  <div class="origin-tag">${arr.originName}</div>
+                </div>
+                <div class="gate-badge">${arrGate}</div>
+              </div>
+              <div class="status-row">
+                <span>${statusText}</span> • <span>${arr.status}</span>
+              </div>
+              <div class="connections-header">
+                <span>Bağlantılı Gidişler (${connections.length})</span>
+                <span style="font-size:10px; color:#64748b;">[T+35 - T+180 dk]</span>
+              </div>
+              ${depListHtml}
+            </div>
+          `;
+        }
+      });
+
+      if (count === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <p>ℹ️ Seçili kriterlere uyan aktif aktarma bulunamadı.</p>
+            <p style="font-size:11px; margin-top:4px;">Filtreyi değiştirin veya kapı aratın.</p>
+          </div>
+        `;
+      } else {
+        container.innerHTML = cardsHtml;
+      }
+    }
+
+    function setFilter(mode, el) {
+      document.querySelectorAll(".filter-chip").forEach(c => c.classList.remove("active"));
+      el.classList.add("active");
+      state.filterMode = mode;
+      renderCards();
+    }
+
+    function applyCustomGate() {
+      const input = document.getElementById("gateInput").value.trim().toUpperCase();
+      state.customGate = input || null;
+      renderCards();
+    }
+
+    fetchFlightData();
+    setInterval(fetchFlightData, 60000);
+  </script>
+</body>
+</html>
