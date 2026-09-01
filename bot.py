@@ -1,6 +1,8 @@
 """
 WCHS-IST: İstanbul Havalimanı Otonom Transfer & Kapı Radarı
-Resmi iGA (IST / LTFM) Canlı FIDS Motoru (Cloudflare Bridge Destekli)
+Tamamen "İSTEĞE BAĞLI (ON-DEMAND)" Mod:
+- Arkada sessiz bekler, 5 dakikada bir otomatik mesaj ATMAZ.
+- Yalnızca sen Telegram'dan butona bastığında veya kapı yazdığında İGA'yı sorgular ve kart basar.
 """
 
 import json
@@ -40,7 +42,6 @@ CONFIG = {
 
 last_update_id = 0
 cached_flights = {"time": 0, "arrivals": [], "departures": [], "source": ""}
-# Saha operatörünün manuel atadığı kapılar: {"TK1944": "F4"}
 custom_flight_gates = {}
 
 def get_now_ist() -> datetime:
@@ -61,7 +62,8 @@ def fetch_iga_direct_flights():
     global cached_flights
     now_ist = get_now_ist()
 
-    if time.time() - cached_flights["time"] < 180 and cached_flights["arrivals"]:
+    # 60 saniyelik önbellek (kullanıcı arka arkaya butona basarsa sistemi yormasın)
+    if time.time() - cached_flights["time"] < 60 and cached_flights["arrivals"]:
         return now_ist, cached_flights["arrivals"], cached_flights["departures"], cached_flights["source"]
 
     url = "https://wild-lake-8cfa.haciyatmaz300.workers.dev/"
@@ -110,7 +112,6 @@ def fetch_iga_direct_flights():
                         gate_raw = str(item.get("gate") or "").strip()
                         carousel = str(item.get("carousel") or "").strip()
                         
-                        # Eğer operatör önceden kapı atadıysa onu al
                         if flight_no in custom_flight_gates:
                             gate_val = custom_flight_gates[flight_no]
                         elif gate_raw and gate_raw not in ("", "-", "None"):
@@ -205,7 +206,7 @@ def calc_transfer_metrics(arr_gate: str, dep_gate: str, delta_min: float):
         walk_min = 12
         tag = "🟡 STANDART"
 
-    # Risk Hesabı: Net Pay = Kalan Süre - İntikal - 20 dk Boarding Kapanışı
+    # Risk Hesabı
     net_margin = delta_min - walk_min - 20
     if net_margin <= 20:
         risk_str = f"🚨 ÇOK ACİL (Net Pay: {int(net_margin)} dk)"
@@ -363,7 +364,7 @@ def handle_telegram_updates():
             if not raw_text:
                 continue
 
-            # 1. Belirli bir uçuşa kapı atama (Örn: "TK1944 F4" veya "TK 1944 F4")
+            # 1. Belirli bir uçuşa kapı atama (Örn: "TK1944 F4")
             m_flight_gate = re.match(r"^(TK\s*\d+)\s+([A-G]\d+[A-Z]?)$", raw_text.upper())
             if m_flight_gate:
                 f_code = m_flight_gate.group(1).replace(" ", "")
@@ -381,7 +382,7 @@ def handle_telegram_updates():
                 send_telegram(f"🎯 <b>Kapı {gate_entered} için Anlık Aktarma Hesaplanıyor...</b>")
                 execute_radar(custom_gate=gate_entered)
 
-            # 3. Ana Menü Butonları
+            # 3. Butonlara tıklandığında İSTEĞE BAĞLI çalışır
             elif raw_text in ["🛬 Şu Anki İnişler", "🔄 Ekranı Yenile", "/tara", "/simdi", "📋 Tüm Aktarmalar"]:
                 CONFIG["filter_mode"] = "ALL"
                 CONFIG["selected_pier"] = None
@@ -416,20 +417,13 @@ def handle_telegram_updates():
     except Exception as e:
         print(f"[!] Telegram update hatası: {e}", flush=True)
 
+# ==============================================================================
+# SESSİZ DİNLEME MODU (OTOMATİK SPAM YOK - SADECE BUTONLA ÇALIŞIR)
+# ==============================================================================
 if __name__ == "__main__":
-    print("[*] WCHS-IST Akıllı Radar başlatılıyor...", flush=True)
-    send_telegram(
-        "🚀 <b>WCHS Akıllı Radar Aktif! (iGA Canlı FIDS Motoru)</b>\n\n"
-        "• Doğrudan kapı yazarak (örn: <code>F7</code> veya <code>E3</code>) o kapıya özel rota alabilirsin.\n"
-        "• Uçuşa kapı atamak için <code>TK1944 F4</code> yazabilirsin.\n"
-        "• Butonlar üzerinden acil aktarmaları ve iskeleleri filtreleyebilirsin."
-    )
-    execute_radar()
-
-    last_scan = time.time()
+    print("[*] WCHS-IST Radar sessiz modda aktif (Sadece sen butona bastığında kart basacak)...", flush=True)
+    
+    # 7/24 arkada sessizce bekler, hiçbir otomatik mesaj ATMAZ.
     while True:
         handle_telegram_updates()
-        if time.time() - last_scan > 300:
-            execute_radar()
-            last_scan = time.time()
         time.sleep(1)
