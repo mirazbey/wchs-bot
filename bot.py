@@ -59,6 +59,21 @@ def parse_iso_dt(val):
     except Exception:
         return None
 
+
+def query_wa_bridge_gate(flight_no: str):
+    """Local WhatsApp Bridge API'sinden (port 5005) anlık kapı çeker"""
+    try:
+        clean_flight = flight_no.replace(" ", "").upper()
+        url = f"http://localhost:5005/gate/{clean_flight}"
+        req = urllib.request.Request(url, headers={"User-Agent": "WCHS-Bot"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if data.get("success") and data.get("gate"):
+                return data["gate"]
+    except Exception:
+        pass
+    return None
+
 def fetch_iga_direct_flights():
     global cached_flights
     now_ist = get_now_ist()
@@ -374,7 +389,25 @@ def handle_telegram_updates():
                 continue
 
             # 1. Belirli bir uçuşa kapı atama (Örn: "TK1944 F4")
+            
+            # 0. Sadece uçuş kodu girildiyse (Örn: "TK1716" veya "TK 1716"): WhatsApp köprüsünden kapıyı otomatik çek
+            m_single_flight = re.match(r"^(TK\s*\d+)$", raw_text.upper())
+            if m_single_flight:
+                f_code = m_single_flight.group(1).replace(" ", "")
+                send_telegram(f"🔍 <b>{f_code}</b> için iGA WhatsApp asistanından kapı sorgulanıyor...")
+                wa_gate = query_wa_bridge_gate(f_code)
+                if wa_gate:
+                    custom_flight_gates[f_code] = wa_gate
+                    cached_flights["time"] = 0
+                    send_telegram(f"🎯 <b>iGA WhatsApp Doğruladı:</b> {f_code} kapısı <b>{wa_gate}</b> olarak alındı!")
+                    execute_radar(target_flight=f_code)
+                else:
+                    send_telegram(f"ℹ️ WhatsApp'tan otomatik kapı alınamadı (Köprü kapalı veya uçuş bulunamadı).")
+                    execute_radar(target_flight=f_code)
+                continue
+
             m_flight_gate = re.match(r"^(TK\s*\d+)\s+([A-G]\d+[A-Z]?)$", raw_text.upper())
+
             if m_flight_gate:
                 f_code = m_flight_gate.group(1).replace(" ", "")
                 g_code = m_flight_gate.group(2)
