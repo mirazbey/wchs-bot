@@ -36,6 +36,7 @@ class CloudHealthHandler(BaseHTTPRequestHandler):
             now_ist = bot.get_now_ist()
             resp = {
                 "status": "online",
+                "version": "2026-09-14-gate-flow-v2",
                 "service": "WCHS-IST Transfer Radar (Azure Cloud)",
                 "istTime": now_ist.strftime("%Y-%m-%d %H:%M:%S"),
                 "botUser": "@wchs_bot",
