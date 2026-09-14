@@ -59,6 +59,9 @@ telegram_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="Telegram
 telegram_slots = threading.BoundedSemaphore(6)
 
 
+GATE_CACHE_TTL = 1800  # 30 dakika
+
+
 def set_manual_gate(flight, gate):
     flight = normalize_flight(flight)
     custom_flight_gates[flight] = exact_gate(gate)
@@ -67,7 +70,7 @@ def set_manual_gate(flight, gate):
 
 def manual_gate(flight):
     flight = normalize_flight(flight)
-    if time.monotonic() - custom_gate_times.get(flight, -1e9) < 120:
+    if time.monotonic() - custom_gate_times.get(flight, -1e9) < GATE_CACHE_TTL:
         return custom_flight_gates.get(flight)
     custom_flight_gates.pop(flight, None)
     custom_gate_times.pop(flight, None)
@@ -400,29 +403,52 @@ def update_telegram(text, message_id, chat_id=None):
 
 
 def render_gate_radar(user_gate, arrivals, departures, note=""):
-    targets = gate_targets(user_gate)
+    gate = exact_gate(user_gate)
+    if not gate:
+        return "⚠️ Geçersiz kapı formatı. Örn: A11 veya B5A"
+
     now_ist = get_now_ist()
-    parts = [f"📍 <b>{' / '.join(targets)}</b> | 🕒 {now_ist:%H:%M}"]
-    for gate in targets:
-        lines = [f"🚪 <b>{gate}</b>"]
-        for label, flights, time_key, city_key in [
-            ("🛬 Geliş", arrivals, "arr_time", "origin_name"),
-            ("🛫 Gidiş", departures, "dep_time", "dest")]:
-            matches = [f for f in flights if exact_gate(f.get("gate")) == gate
-                       and -40 <= (f[time_key] - now_ist).total_seconds() / 60 <= 100]
-            matches.sort(key=lambda f: abs((f[time_key] - now_ist).total_seconds()))
-            if not matches:
-                lines.append(f"{label}: Doğrulanmış uçuş bilgisi yok.")
-            for f in matches[:3]:
-                lines.append(f"{label}: <b>{html.escape(f['flight_no'])}</b> · "
-                             f"{html.escape(f.get(city_key, ''))} · {f[time_key]:%H:%M}")
-        parts.append("\n".join(lines))
-    if len(targets) == 2:
-        # Base-only data has no evidence for the A/B side.
-        base_matches = [f for f in arrivals + departures if exact_gate(f.get("gate")) == user_gate]
-        if base_matches:
-            parts.append(f"ℹ️ {user_gate}: " + ", ".join(html.escape(f['flight_no']) for f in base_matches[:3])
-                         + " — A/B ayrımı kaynakta belirtilmemiş.")
+    is_base = gate[-1].isdigit()
+    relevant_gates = [gate, gate + "A", gate + "B"] if is_base else [gate]
+
+    sections = []
+    has_any_flight = False
+
+    for g in relevant_gates:
+        g_arrs = [f for f in arrivals if exact_gate(f.get("gate")) == g
+                  and -40 <= (f["arr_time"] - now_ist).total_seconds() / 60 <= 100]
+        g_arrs.sort(key=lambda f: abs((f["arr_time"] - now_ist).total_seconds()))
+
+        g_deps = [f for f in departures if exact_gate(f.get("gate")) == g
+                  and -40 <= (f["dep_time"] - now_ist).total_seconds() / 60 <= 100]
+        g_deps.sort(key=lambda f: abs((f["dep_time"] - now_ist).total_seconds()))
+
+        if g_arrs or g_deps:
+            has_any_flight = True
+            lines = [f"🚪 <b>{g}</b>"]
+            for f in g_arrs[:3]:
+                lines.append(f"🛬 Geliş: <b>{html.escape(f['flight_no'])}</b> · "
+                             f"{html.escape(f.get('origin_name', ''))} · {f['arr_time']:%H:%M}")
+            for f in g_deps[:3]:
+                status_suffix = f" ({f['status']})" if f.get("status") else ""
+                lines.append(f"🛫 Gidiş: <b>{html.escape(f['flight_no'])}</b> · "
+                             f"{html.escape(f.get('dest', ''))} · {f['dep_time']:%H:%M}{status_suffix}")
+            sections.append("\n".join(lines))
+
+    if not has_any_flight:
+        lines = [f"🚪 <b>{gate}</b>",
+                 "🛬 Geliş: Doğrulanmış uçuş bilgisi yok.",
+                 "🛫 Gidiş: Doğrulanmış uçuş bilgisi yok."]
+        sections.append("\n".join(lines))
+    elif not is_base:
+        base_gate = re.sub(r"[A-Z]+$", "", gate)
+        base_flights = [f for f in arrivals + departures if exact_gate(f.get("gate")) == base_gate
+                        and -40 <= (f.get("arr_time", f.get("dep_time")) - now_ist).total_seconds() / 60 <= 100]
+        if base_flights:
+            sections.append(f"ℹ️ {base_gate} Ana Kapı: " + ", ".join(html.escape(f['flight_no']) for f in base_flights[:3]))
+
+    header = f"📍 <b>{gate}</b> | 🕒 {now_ist:%H:%M}"
+    parts = [header] + sections
     if note:
         parts.append(html.escape(note))
     return "\n\n".join(parts)
@@ -435,54 +461,91 @@ def execute_proximity_radar(user_gate="F3", chat_id=None):
         return
     CONFIG["user_gate"] = user_gate
     now_ist, arrivals, departures, _ = fetch_iga_direct_flights()
-    # Work on copies: WhatsApp results must not become permanent FIDS values.
-    arrivals = [dict(f) for f in arrivals]
-    departures = [dict(f) for f in departures]
-    unknown = [f for f in arrivals if not exact_gate(f.get("gate"))
-               and -40 <= (f["arr_time"] - now_ist).total_seconds() / 60 <= 60]
-    unknown.sort(key=lambda f: abs((f["arr_time"] - now_ist).total_seconds()))
-    limit = max(1, int(os.environ.get("WA_RADAR_MAX_QUERIES", "2")))
-    candidates = unknown[:limit]
-    note = ""
-    if candidates:
-        note = f"WhatsApp: {len(candidates)} yakın geliş sırayla doğrulanıyor. Her uçuşun yanıtı birkaç adımda gelebilir."
-    message_id = send_telegram(render_gate_radar(user_gate, arrivals, departures, note), target_chat_id=chat_id)
-    if not candidates:
-        return
-    health = bridge_client.status()
-    if not health.get("connected") or health.get("protocol") != 2:
-        note = "WhatsApp köprüsü bağlı değil veya güncel değil; geliş kapıları doğrulanamadı."
-        update_telegram(render_gate_radar(user_gate, arrivals, departures, note), message_id, chat_id)
-        return
-    confirmed = 0
-    failures = []
-    for index, flight in enumerate(candidates, 1):
-        def progress(state):
-            descriptions = {"queued": "sırada", "waiting_reply": "ilk yanıt bekleniyor",
-                "waiting_after_date": "tarih seçildi, kapı yanıtı bekleniyor",
-                "searching": "iGA araştırıyor", "waiting_exact_gate": "tam kapı mesajı bekleniyor"}
-            note = f"WhatsApp {index}/{len(candidates)}: {flight['flight_no']} — {descriptions.get(state, 'yanıt bekleniyor')}."
-            update_telegram(render_gate_radar(user_gate, arrivals, departures, note), message_id, chat_id)
-        result = bridge_client.lookup(flight["flight_no"], date=flight["arr_time"].date().isoformat(), progress=progress)
-        if result.get("success"):
-            flight["gate"] = result["gate"]
-            confirmed += 1
-        else:
-            failures.append(result.get("status"))
-        note = f"WhatsApp: {index}/{len(candidates)} sorgu tamamlandı; {confirmed} gelişin kapısı doğrulandı."
-        update_telegram(render_gate_radar(user_gate, arrivals, departures, note), message_id, chat_id)
-        if result.get("status") in {"disconnected", "unreachable", "consent_required"}:
-            break
-    remaining = len(unknown) - confirmed
-    note = f"WhatsApp: {confirmed} gelişin kapısı doğrulandı."
-    if remaining:
-        note += f" {remaining} yakın gelişin kapısı hâlâ doğrulanamadı; liste eksik olabilir."
-    if failures:
-        reasons = {"timeout": "iGA yanıtı zaman aşımına uğradı", "partial": "tam kapı numarası gelmedi",
-                   "consent_required": "iGA hesabında KVKK onayı gerekiyor", "unreachable": "köprüye ulaşılamadı",
-                   "disconnected": "WhatsApp bağlantısı kesildi", "not_announced": "kapı açıklanmamış"}
-        note += " " + reasons.get(failures[-1], "Bazı sorgularda tam kapı bilgisi alınamadı") + "."
-    update_telegram(render_gate_radar(user_gate, arrivals, departures, note), message_id, chat_id)
+    send_telegram(render_gate_radar(user_gate, arrivals, departures), target_chat_id=chat_id)
+
+
+def background_arrival_gate_crawler():
+    """
+    7/24 Arka Plan Geliş Kapı Tarayıcısı (Rolling Window Pre-fetcher).
+    - SADECE Dış Hatlar Geliş Uçuşları (isInternational=1, nature=0)
+    - Zaman Aralığı: Teker koymuş (-25 dk) ila inmek üzere olan (+20 dk) uçuşlar
+    - WhatsApp köprüsünü yormadan her 25 saniyede en fazla 1 uçuş sorgular
+    - Doğrulanan kapıları 30 dakika boyunca hafızada (custom_flight_gates) tutar
+    """
+    print("[*] WCHS Background Arrival Gate Crawler aktif.", flush=True)
+    recently_queried = {}
+
+    while True:
+        try:
+            now_ist, arrivals, _, _ = fetch_iga_direct_flights()
+            now_mono = time.monotonic()
+
+            candidates = []
+            for f in arrivals:
+                arr_time = f.get("arr_time")
+                if not arr_time:
+                    continue
+
+                delta_min = (arr_time - now_ist).total_seconds() / 60.0
+                # Teker koyduktan sonra ~20 dk kapıya yanaşma payı (-25 dk)
+                # ve 15-20 dk içinde teker koyacak uçaklar (+20 dk)
+                if not (-25 <= delta_min <= 20):
+                    continue
+
+                flight_no = f.get("flight_no")
+                if not flight_no:
+                    continue
+
+                # FIDS'te zaten doğrulanmış kapı var mı?
+                if exact_gate(f.get("source_gate")):
+                    continue
+
+                # Hafızada zaten doğrulanmış kapı var mı?
+                if manual_gate(flight_no):
+                    continue
+
+                # Cooldown: son 3 dakika içinde sorgulanmış mı?
+                if now_mono - recently_queried.get(flight_no, 0) < 180:
+                    continue
+
+                candidates.append((abs(delta_min), f))
+
+            if candidates:
+                candidates.sort(key=lambda x: x[0])
+                _, target_flight = candidates[0]
+                flight_no = target_flight["flight_no"]
+                flight_date = target_flight["arr_time"].date().isoformat()
+                recently_queried[flight_no] = now_mono
+
+                status = bridge_client.status()
+                if status.get("connected"):
+                    print(f"[*] [Crawler] iGA WhatsApp sorgulanıyor: {flight_no} ({flight_date})...", flush=True)
+                    res = bridge_client.lookup(flight_no, date=flight_date, direction="arrival")
+                    if res.get("success") and res.get("gate"):
+                        gate = exact_gate(res.get("gate"))
+                        if gate:
+                            set_manual_gate(flight_no, gate)
+                            print(f"[+] [Crawler] Kapı doğrulandı: {flight_no} -> {gate}", flush=True)
+                    else:
+                        print(f"[-] [Crawler] {flight_no} kapı henüz açıklanmamış: {res.get('status')}", flush=True)
+                else:
+                    print(f"[!] [Crawler] WhatsApp köprüsü henüz bağlı değil, bekleniyor...", flush=True)
+                    time.sleep(15)
+
+                time.sleep(25)
+            else:
+                time.sleep(15)
+
+        except Exception as err:
+            print(f"[!] [Crawler Döngü Hatası]: {err}", flush=True)
+            time.sleep(15)
+
+
+def start_background_crawler():
+    crawler_thread = threading.Thread(target=background_arrival_gate_crawler, daemon=True, name="ArrivalCrawlerThread")
+    crawler_thread.start()
+    print("[*] Arrival Gate Crawler thread started.", flush=True)
+    return crawler_thread
 
 
 def execute_radar(custom_gate=None, target_flight=None, chat_id=None):
@@ -697,16 +760,27 @@ def handle_telegram_message(msg):
         return
 
     elif intent == "SINGLE_FLIGHT":
-        send_telegram(f"⏳ <b>{arg1}</b> için iGA WhatsApp yanıtı bekleniyor; tarih seçimi sonrası mesajların tamamı alınacak.", target_chat_id=chat_id)
         now_ist, arrs, deps, _ = fetch_iga_direct_flights()
-        target = next((f for f in arrs + deps if normalize_flight(f["flight_no"]) == arg1), None)
+        clean_target = normalize_flight(arg1)
+        existing_gate = manual_gate(clean_target)
+        target = next((f for f in arrs + deps if normalize_flight(f["flight_no"]) == clean_target), None)
+        if not existing_gate and target and target.get("source_gate"):
+            existing_gate = target["source_gate"]
+
+        if existing_gate:
+            execute_radar(target_flight=clean_target, custom_gate=existing_gate, chat_id=chat_id)
+            return
+
+        send_telegram(f"⏳ <b>{clean_target}</b> için iGA WhatsApp yanıtı bekleniyor...", target_chat_id=chat_id)
         direction = "departure" if target and "dep_time" in target else "arrival"
         flight_time = (target.get("arr_time") or target.get("dep_time")) if target else now_ist
-        result = bridge_client.lookup(arg1, date=flight_time.date().isoformat(), direction=direction)
+        result = bridge_client.lookup(clean_target, date=flight_time.date().isoformat(), direction=direction)
         wa_gate = result.get("gate") if result.get("success") else None
-        if not wa_gate:
+        if wa_gate:
+            set_manual_gate(clean_target, wa_gate)
+        else:
             send_telegram("⚠️ WhatsApp'tan tam kapı doğrulanamadı. " + html.escape(result.get("error") or result.get("status", "")), target_chat_id=chat_id)
-        execute_radar(target_flight=arg1, custom_gate=wa_gate, chat_id=chat_id)
+        execute_radar(target_flight=clean_target, custom_gate=wa_gate, chat_id=chat_id)
         return
 
     elif intent == "PROXIMITY":
@@ -756,6 +830,7 @@ def handle_telegram_updates():
 
 def run_bot_loop():
     print("[*] WCHS-IST Telegram Botu başlatıldı...", flush=True)
+    start_background_crawler()
     while True:
         try:
             handle_telegram_updates()

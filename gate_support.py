@@ -23,9 +23,7 @@ def gate_targets(value):
     gate = exact_gate(value)
     if not gate:
         return []
-    # A base gate request has two explicit sub-gate sections. A source reporting
-    # only B5 is never silently assigned to either B5A or B5B.
-    return [gate + "A", gate + "B"] if gate[-1].isdigit() else [gate]
+    return [gate, gate + "A", gate + "B"] if gate[-1].isdigit() else [gate]
 
 
 class GateBridgeClient:
@@ -58,7 +56,7 @@ class GateBridgeClient:
         date = date or (datetime.now(timezone.utc) + timedelta(hours=3)).date().isoformat()
         key = (flight, date, direction)
         cached = self.cache.get(key)
-        if cached and time.monotonic() - cached[0] < 120:
+        if cached and time.monotonic() - cached[0] < cached[2]:
             return dict(cached[1], fromCache=True)
         deadline = time.monotonic() + self.total_timeout
         job_id = None
@@ -80,8 +78,10 @@ class GateBridgeClient:
             gate = exact_gate(result.get("gate"))
             if result.get("success") and result.get("status") == "confirmed" and gate:
                 result["gate"] = gate
-                self.cache[key] = (time.monotonic(), result)
+                self.cache[key] = (time.monotonic(), result, 1800)
                 return result
+            # Cache failure / unannounced for 120 seconds to avoid rapid retry
+            self.cache[key] = (time.monotonic(), result, 120)
             result["success"] = False
             result["gate"] = None
             return result

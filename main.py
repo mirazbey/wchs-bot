@@ -36,11 +36,12 @@ class CloudHealthHandler(BaseHTTPRequestHandler):
             now_ist = bot.get_now_ist()
             resp = {
                 "status": "online",
-                "version": "2026-09-14-gate-flow-v2",
+                "version": "2026-09-14-crawler-v3",
                 "service": "WCHS-IST Transfer Radar (Azure Cloud)",
                 "istTime": now_ist.strftime("%Y-%m-%d %H:%M:%S"),
                 "botUser": "@wchs_bot",
                 "cachedFlights": len(bot.cached_flights.get("arrivals", [])),
+                "customGatesCount": len(bot.custom_flight_gates),
                 "userGate": bot.CONFIG.get("user_gate", "F3")
             }
             self._send_json(200, resp)
