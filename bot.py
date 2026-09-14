@@ -421,13 +421,21 @@ def render_gate_radar(user_gate, arrivals, departures, note=""):
         if g_arrs or g_deps:
             has_any_flight = True
             lines = [f"🚪 <b>{g}</b>"]
-            for f in g_arrs[:3]:
-                lines.append(f"🛬 Geliş: <b>{html.escape(f['flight_no'])}</b> · "
-                             f"{html.escape(f.get('origin_name', ''))} · {f['arr_time']:%H:%M}")
-            for f in g_deps[:3]:
-                status_suffix = f" ({f['status']})" if f.get("status") else ""
-                lines.append(f"🛫 Gidiş: <b>{html.escape(f['flight_no'])}</b> · "
-                             f"{html.escape(f.get('dest', ''))} · {f['dep_time']:%H:%M}{status_suffix}")
+            if g_arrs:
+                for f in g_arrs[:3]:
+                    lines.append(f"🛬 Geliş: <b>{html.escape(f['flight_no'])}</b> · "
+                                 f"{html.escape(f.get('origin_name', ''))} · {f['arr_time']:%H:%M}")
+            else:
+                lines.append("🛬 Geliş: Doğrulanmış uçuş bilgisi yok.")
+
+            if g_deps:
+                for f in g_deps[:3]:
+                    status_suffix = f" ({f['status']})" if f.get("status") else ""
+                    lines.append(f"🛫 Gidiş: <b>{html.escape(f['flight_no'])}</b> · "
+                                 f"{html.escape(f.get('dest', ''))} · {f['dep_time']:%H:%M}{status_suffix}")
+            else:
+                lines.append("🛫 Gidiş: Doğrulanmış uçuş bilgisi yok.")
+
             sections.append("\n".join(lines))
 
     if not has_any_flight:
@@ -487,8 +495,9 @@ def background_arrival_gate_crawler():
                 if not (-25 <= delta_min <= 20):
                     continue
 
-                flight_no = f.get("flight_no")
-                if not flight_no:
+                flight_no = f.get("flight_no") or ""
+                # SADECE Türk Hava Yolları (TK) Dış Hatlar Gelişleri!
+                if not flight_no.startswith("TK"):
                     continue
 
                 # FIDS'te zaten doğrulanmış kapı var mı?

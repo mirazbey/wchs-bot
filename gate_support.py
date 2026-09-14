@@ -27,7 +27,7 @@ def gate_targets(value):
 
 
 class GateBridgeClient:
-    def __init__(self, url, request_timeout=10, total_timeout=180, poll_interval=1):
+    def __init__(self, url, request_timeout=10, total_timeout=60, poll_interval=1):
         self.url = url.rstrip("/")
         self.request_timeout = request_timeout
         self.total_timeout = total_timeout
