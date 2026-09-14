@@ -264,35 +264,38 @@ def ask_gpt4o_mini(user_msg: str, chat_id=None) -> str:
 
     ctx_lines = [f"Canlı Saat: {now_ist.strftime('%H:%M')} | Operatör Kapısı: {CONFIG.get('user_gate', 'F3')}"]
 
-    # Mesajda geçen uçuş kodu veya şehir varsa eşleşenleri bul
+    # Mesajda geçen uçuş kodu, kapı veya şehir varsa eşleşenleri bul
     user_upper = user_msg.upper()
     matched = []
     codes = re.findall(r"(?:TK\s*\d+|\b[A-Z]{3}\b)", user_upper)
+    gates = re.findall(r"\b([A-G]\d+[A-Z]?)\b", user_upper)
     for f in arrivals + departures:
         fn = f["flight_no"].replace(" ", "")
         city = (f.get("origin_name") or f.get("dest") or "").upper()
-        if any(c.replace(" ", "") in fn for c in codes) or any(w in city for w in user_upper.split() if len(w) > 3):
+        g = f.get("gate", "").upper()
+        if any(c.replace(" ", "") in fn for c in codes) or any(w in city for w in user_upper.split() if len(w) > 3) or any(gate in g for gate in gates):
             matched.append(f)
 
     if matched:
         ctx_lines.append("İlgili Uçuşlar:")
-        for m in matched[:4]:
+        for m in matched[:5]:
             if "arr_time" in m:
                 ctx_lines.append(f"• GELİŞ: {m['flight_no']} ({m.get('origin_name')}) | Kapı: {m['gate']} | İniş: {m['arr_time'].strftime('%H:%M')} | Durum: {m['status']}")
             else:
                 ctx_lines.append(f"• GİDİŞ: {m['flight_no']} ({m.get('dest')}) | Kapı: {m['gate']} | Kalkış: {m['dep_time'].strftime('%H:%M')} | Durum: {m['status']}")
 
-    dep_brief = [f"{d['flight_no']}->{d['dest']} (Kapı {d['gate']}, {d['dep_time'].strftime('%H:%M')})" for d in departures[:8]]
     arr_brief = [f"{a['flight_no']} ({a['origin_name']}, Kapı {a['gate']}, {a['arr_time'].strftime('%H:%M')})" for a in arrivals[:8]]
-    ctx_lines.append("Yakın Kalkışlar: " + "; ".join(dep_brief))
-    ctx_lines.append("Yakın Gelişler: " + "; ".join(arr_brief))
+    dep_brief = [f"{d['flight_no']}->{d['dest']} (Kapı {d['gate']}, {d['dep_time'].strftime('%H:%M')})" for d in departures[:8]]
+    ctx_lines.append("Yakın Gelişler (İnişler): " + "; ".join(arr_brief))
+    ctx_lines.append("Yakın Kalkışlar (Gidişler): " + "; ".join(dep_brief))
 
     system_prompt = (
         "Sen İstanbul Havalimanı (IST) WCHS / PRM tekerlekli sandalye transfer operasyon asistanısın. "
         "Operatör sahada yolcu yetiştiriyor ve acelesi var. "
-        "Yanıtların: Çok kısa, net, saygılı, doğrudan aksiyon odaklı Türkçe olmalı. "
-        "Maksimum 2 cümle. Asla gevezelik veya genel tavsiye yapma. Kapı, uçuş kodu ve dakikaları net söyle. "
-        "Eğer uçuş kapısı 'F İskelesi' gibi sadece iskele ise, net körük numarasının henüz sisteme düşmediğini, iskele girişinde beklemesini ve operatör konumuna göre intikal süresini belirt."
+        "DİKKAT: Kullanıcı bir kapı sorduğunda (örn: F3, F6, E2), bu kapıyı ASLA sadece gidiş olarak varsayma! "
+        "WCHS operasyonunda öncelik GELEN yolcuyu karşılamaktır. Eğer kapıda gelen/inen uçak varsa mutlaka önce onu belirt, ardından kalkan uçağı söyle. "
+        "Eğer uçuş kapısı 'F İskelesi' gibi sadece iskele ise, net körük numarasının henüz sisteme düşmediğini ve iskele girişinde beklemesini belirt. "
+        "Yanıtların: Çok kısa, net, saygılı, doğrudan aksiyon odaklı Türkçe olmalı. Maksimum 2 cümle."
     )
     ctx_text = "\n".join(ctx_lines)
     user_content = f"Sistem Durumu:\n{ctx_text}\n\nOperatör Mesajı: {user_msg}"
@@ -360,7 +363,7 @@ def send_telegram(text: str, reply_markup=None, target_chat_id=None):
         print(f"[!] Telegram gönderim hatası: {e}", flush=True)
 
 def execute_proximity_radar(user_gate="F3", chat_id=None):
-    """Sade ve doğrudan operasyonel Konum Radarı"""
+    """Sade ve doğrudan operasyonel Konum Radarı - ÖNCE GELİŞLER!"""
     user_gate = user_gate.upper().replace(" ", "")
     user_pier = user_gate[0]
     CONFIG["user_gate"] = user_gate
@@ -369,43 +372,43 @@ def execute_proximity_radar(user_gate="F3", chat_id=None):
     header = f"📍 <b>KONUMUN: {user_gate} ({user_pier} İskelesi)</b> | 🕒 <b>{now_ist.strftime('%H:%M')}</b>\n"
     body_parts = []
 
-    # 1. Nearby Departures on user's pier (max 3 items)
-    dep_nearby = []
-    for d in departures:
-        g = d["gate"]
-        if not g or g == "Belirsiz":
-            continue
-        walk_min, dist_tag = calc_gate_dist(user_gate, g)
-        rem_min = int((d["dep_time"] - now_ist).total_seconds() / 60)
-        if g.startswith(user_pier) and 0 <= rem_min <= 100:
-            dep_nearby.append((walk_min, rem_min, d, dist_tag))
-
-    dep_nearby.sort(key=lambda x: (x[0], x[1]))
-
-    if dep_nearby:
-        dep_lines = ["🛫 <b>YAKIN KALKIŞLAR:</b>"]
-        for walk_min, rem_min, d, dist_tag in dep_nearby[:3]:
+    # 1. Bu kapıya özel direkt uçuş var mı? (Geliş veya Gidiş)
+    exact_arr = [a for a in arrivals if a.get("gate", "").upper().startswith(user_gate)]
+    exact_dep = [d for d in departures if d.get("gate", "").upper().startswith(user_gate)]
+    exact_cards = []
+    if exact_arr:
+        for a in exact_arr:
+            diff_now = int((a["arr_time"] - now_ist).total_seconds() / 60)
+            t_str = f"İndi ({abs(diff_now)} dk önce)" if diff_now <= 0 else f"İniş: {a['arr_time'].strftime('%H:%M')} ({diff_now} dk)"
+            exact_cards.append(f"🛬 <b>BU KAPIDA GELİŞ:</b> {a['flight_no']} ({a['origin_name']}) | {t_str}")
+    if exact_dep:
+        for d in exact_dep[:2]:
+            rem_min = int((d["dep_time"] - now_ist).total_seconds() / 60)
             st = f" [{d['status']}]" if d['status'] else ""
-            dep_lines.append(
-                f"• <b>{d['flight_no']} ➔ {d['dest']}</b> | KAPI: <b>{d['gate']}</b> ({dist_tag})\n"
-                f"  Kalkış: <b>{d['dep_time'].strftime('%H:%M')}</b> (<b>{rem_min} dk</b> kaldı){st}"
-            )
-        body_parts.append("\n".join(dep_lines))
+            exact_cards.append(f"🛫 <b>BU KAPIDA GİDİŞ:</b> {d['flight_no']} ➔ {d['dest']} | Kalkış: {d['dep_time'].strftime('%H:%M')} ({rem_min} dk kaldı){st}")
+    
+    if exact_cards:
+        body_parts.append("\n".join(exact_cards))
 
-    # 2. Nearby Arrivals on user's pier (max 3 items)
+    # 2. Yakın İnişler ve Gelen Yolcular (HER ZAMAN EN ÜSTTE!)
     arr_relevant = []
     for a in arrivals:
-        g = a["gate"]
         diff_now = int((a["arr_time"] - now_ist).total_seconds() / 60)
-        if -40 <= diff_now <= 45:
-            if g.startswith(user_pier) or (user_pier in ["E", "F"] and "F/E" in g):
-                arr_relevant.append((diff_now, a))
+        if -40 <= diff_now <= 60:
+            arr_relevant.append((diff_now, a))
 
-    arr_relevant.sort(key=lambda x: x[0])
+    def _arr_sort_key(item):
+        d_now, f = item
+        g = f.get("gate", "")
+        on_pier_score = 0 if g.startswith(user_pier) else 1
+        oss_score = 0 if f.get("is_oss") else 1
+        return (on_pier_score, oss_score, abs(d_now))
+
+    arr_relevant.sort(key=_arr_sort_key)
 
     if arr_relevant:
-        arr_lines = ["🛬 <b>GELEN UÇAKLAR & AKTARMALAR:</b>"]
-        for diff_now, a in arr_relevant[:2]:
+        arr_lines = ["🛬 <b>YAKIN İNİŞLER & GELEN YOLCULAR (GELİŞ):</b>"]
+        for diff_now, a in arr_relevant[:3]:
             t_str = f"İndi ({abs(diff_now)} dk önce)" if diff_now <= 0 else f"İniş: {a['arr_time'].strftime('%H:%M')} ({diff_now} dk sonra)"
             oss_str = " | 🇪🇺 OSS" if a["is_oss"] else ""
 
@@ -427,6 +430,29 @@ def execute_proximity_radar(user_gate="F3", chat_id=None):
             arr_lines.append(card_str)
         body_parts.append("\n".join(arr_lines))
 
+    # 3. Yakın Kalkışlar (GİDİŞLER - İkinci Sırada)
+    dep_nearby = []
+    for d in departures:
+        g = d["gate"]
+        if not g or g == "Belirsiz":
+            continue
+        walk_min, dist_tag = calc_gate_dist(user_gate, g)
+        rem_min = int((d["dep_time"] - now_ist).total_seconds() / 60)
+        if g.startswith(user_pier) and 0 <= rem_min <= 100:
+            dep_nearby.append((walk_min, rem_min, d, dist_tag))
+
+    dep_nearby.sort(key=lambda x: (x[0], x[1]))
+
+    if dep_nearby:
+        dep_lines = ["🛫 <b>YAKIN KALKIŞLAR (GİDİŞ):</b>"]
+        for walk_min, rem_min, d, dist_tag in dep_nearby[:3]:
+            st = f" [{d['status']}]" if d['status'] else ""
+            dep_lines.append(
+                f"• <b>{d['flight_no']} ➔ {d['dest']}</b> | KAPI: <b>{d['gate']}</b> ({dist_tag})\n"
+                f"  Kalkış: <b>{d['dep_time'].strftime('%H:%M')}</b> (<b>{rem_min} dk</b> kaldı){st}"
+            )
+        body_parts.append("\n".join(dep_lines))
+
     if not body_parts:
         send_telegram(header + "\nℹ️ Bu kapı ve iskelede şu an aktif operasyonel hareketlilik yok.", target_chat_id=chat_id)
         return
@@ -437,6 +463,67 @@ def execute_proximity_radar(user_gate="F3", chat_id=None):
 def execute_radar(custom_gate=None, target_flight=None, chat_id=None):
     """Sade ve okunabilir Aktarma Radarı"""
     now_ist, arrivals, departures, _ = fetch_iga_direct_flights()
+
+    if target_flight:
+        clean_tf = target_flight.replace(" ", "").upper()
+        header = f"🎯 <b>UÇUŞ KARTI: {clean_tf}</b> | 🕒 <b>{now_ist.strftime('%H:%M')}</b>\n───────────────────────\n"
+        
+        # 1. Geliş Uçuşlarında Ara
+        arr_matches = [a for a in arrivals if a["flight_no"].replace(" ", "").upper() == clean_tf]
+        if arr_matches:
+            arr = arr_matches[0]
+            arr_gate = custom_flight_gates.get(clean_tf) or custom_gate or arr["gate"]
+            diff_now = int((arr["arr_time"] - now_ist).total_seconds() / 60)
+            status_text = f"İndi ({abs(diff_now)} dk önce)" if diff_now <= 0 else f"İniş: {arr['arr_time'].strftime('%H:%M')} ({diff_now} dk sonra)"
+            oss_str = " | 🇪🇺 OSS" if arr["is_oss"] else ""
+
+            best_conn = None
+            for dep in departures:
+                delta_arr = (dep["dep_time"] - arr["arr_time"]).total_seconds() / 60
+                rem_now_min = (dep["dep_time"] - now_ist).total_seconds() / 60
+                w_min, tag, risk_str, risk_level = calc_transfer_metrics(arr_gate, dep["gate"], rem_now_min)
+                if 35 <= delta_arr <= 200 and rem_now_min >= (w_min + 15):
+                    if best_conn is None or risk_level < best_conn[0] or (risk_level == best_conn[0] and rem_now_min < best_conn[1]):
+                        best_conn = (risk_level, rem_now_min, dep, w_min, tag, risk_str)
+
+            msg = (
+                f"🛬 <b>GELİŞ: {arr['flight_no']} ({arr['origin_name']})</b>\n"
+                f"🚪 Kapı: <b>{arr_gate}</b>\n"
+                f"🕒 {status_text}{oss_str} | Durum: {arr['status']}\n"
+            )
+            if best_conn:
+                msg += (
+                    f"\n↳ <b>Önerilen Aktarma:</b> {best_conn[2]['flight_no']} ➔ {best_conn[2]['dest']}\n"
+                    f"   Kapı: <b>{best_conn[2]['gate']}</b> | Kalkış: <b>{best_conn[2]['dep_time'].strftime('%H:%M')}</b> ({int(best_conn[1])} dk kaldı)\n"
+                    f"   İntikal: ~{best_conn[3]} dk | {best_conn[5]}"
+                )
+            send_telegram(header + msg, target_chat_id=chat_id)
+            return
+
+        # 2. Gidiş Uçuşlarında Ara
+        dep_matches = [d for d in departures if d["flight_no"].replace(" ", "").upper() == clean_tf]
+        if dep_matches:
+            dep = dep_matches[0]
+            dep_gate = custom_flight_gates.get(clean_tf) or custom_gate or dep["gate"]
+            rem_min = int((dep["dep_time"] - now_ist).total_seconds() / 60)
+            user_g = CONFIG.get("user_gate", "F3")
+            w_min, dist_tag = calc_gate_dist(user_g, dep_gate)
+            msg = (
+                f"🛫 <b>GİDİŞ: {dep['flight_no']} ➔ {dep['dest']}</b>\n"
+                f"🚪 Kapı: <b>{dep_gate}</b> ({dist_tag})\n"
+                f"🕒 Kalkış: <b>{dep['dep_time'].strftime('%H:%M')}</b> (<b>{rem_min} dk</b> kaldı)\n"
+                f"📋 Durum: {dep['status']} | Kontuar: {dep.get('counter', '-')}"
+            )
+            send_telegram(header + msg, target_chat_id=chat_id)
+            return
+
+        # FIDS'te henüz yer almayan ama WhatsApp'tan çekilen uçuşlar
+        gate_info = custom_flight_gates.get(clean_tf)
+        if gate_info:
+            send_telegram(header + f"🎯 <b>{clean_tf}</b> iGA WhatsApp Kapısı: <b>{gate_info}</b>", target_chat_id=chat_id)
+        else:
+            send_telegram(header + f"⚠️ <b>{clean_tf}</b> güncel uçuş tablosunda bulunamadı.", target_chat_id=chat_id)
+        return
 
     header = f"🛬 <b>ŞU ANKİ İNİŞLER & AKTARMALAR</b> | 🕒 <b>{now_ist.strftime('%H:%M')}</b>\n───────────────────────\n"
 
@@ -449,9 +536,6 @@ def execute_radar(custom_gate=None, target_flight=None, chat_id=None):
         origin = arr["origin_name"]
         arr_time = arr["arr_time"]
         arr_gate = custom_gate or arr["gate"]
-
-        if target_flight and arr_flight != target_flight:
-            continue
 
         if CONFIG["selected_pier"] and not arr_gate.startswith(CONFIG["selected_pier"]):
             continue
