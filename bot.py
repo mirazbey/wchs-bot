@@ -73,8 +73,24 @@ def calc_gate_dist(g1: str, g2: str):
     p2 = g2[0].upper()
     n1_match = re.findall(r"\d+", g1)
     n2_match = re.findall(r"\d+", g2)
-    n1 = int(n1_match[0]) if n1_match else 5
-    n2 = int(n2_match[0]) if n2_match else 5
+
+    # Net kapı numarası henüz yoksa (örn: F İskelesi)
+    if "İskele" in g1 or "İskele" in g2 or not n1_match or not n2_match:
+        if p1 == p2:
+            return 2, "Aynı İskele (~2 dk)"
+        pair = {p1, p2}
+        if pair in [{"E", "F"}, {"A", "B"}]:
+            return 7, "Komşu İskele (~7 dk)"
+        elif "D" in pair:
+            return 10, "Merkez D (~10 dk)"
+        elif (p1 in {"E", "F"} and p2 in {"A", "B"}) or (p1 in {"A", "B"} and p2 in {"E", "F"}):
+            return 22, "Uzak Blok (~22 dk)"
+        elif "G" in pair:
+            return 20, "İç Hatlar (~20 dk)"
+        return 12, "Standart (~12 dk)"
+
+    n1 = int(n1_match[0])
+    n2 = int(n2_match[0])
 
     if p1 == p2:
         diff = abs(n1 - n2)
@@ -118,7 +134,7 @@ def query_wa_bridge_gate(flight_no: str):
         clean = flight_no.replace(" ", "").upper()
         url = f"{WA_BRIDGE_URL}/gate/{clean}"
         req = urllib.request.Request(url, headers={"User-Agent": "WCHS-Bot"})
-        with urllib.request.urlopen(req, timeout=8) as resp:
+        with urllib.request.urlopen(req, timeout=45) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             if data.get("success") and data.get("gate"):
                 return data["gate"]
@@ -275,7 +291,8 @@ def ask_gpt4o_mini(user_msg: str, chat_id=None) -> str:
         "Sen İstanbul Havalimanı (IST) WCHS / PRM tekerlekli sandalye transfer operasyon asistanısın. "
         "Operatör sahada yolcu yetiştiriyor ve acelesi var. "
         "Yanıtların: Çok kısa, net, saygılı, doğrudan aksiyon odaklı Türkçe olmalı. "
-        "Maksimum 2 cümle. Asla gevezelik veya genel tavsiye yapma. Kapı, uçuş kodu ve dakikaları net söyle."
+        "Maksimum 2 cümle. Asla gevezelik veya genel tavsiye yapma. Kapı, uçuş kodu ve dakikaları net söyle. "
+        "Eğer uçuş kapısı 'F İskelesi' gibi sadece iskele ise, net körük numarasının henüz sisteme düşmediğini, iskele girişinde beklemesini ve operatör konumuna göre intikal süresini belirt."
     )
     ctx_text = "\n".join(ctx_lines)
     user_content = f"Sistem Durumu:\n{ctx_text}\n\nOperatör Mesajı: {user_msg}"
@@ -581,7 +598,14 @@ def handle_telegram_updates():
                 if wa_gate:
                     custom_flight_gates[arg1] = wa_gate
                     cached_flights["time"] = 0
-                    send_telegram(f"🎯 <b>iGA WhatsApp:</b> {arg1} kapısı <b>{wa_gate}</b>!", target_chat_id=chat_id)
+                    if "İskele" in wa_gate:
+                        send_telegram(
+                            f"🎯 <b>iGA WhatsApp:</b> {arg1} için <b>{wa_gate}</b> belirlendi!\n"
+                            f"<i>(⚠️ Net körük numarası henüz açılmadı, iskeleye yönlenebilirsin.)</i>",
+                            target_chat_id=chat_id
+                        )
+                    else:
+                        send_telegram(f"🎯 <b>iGA WhatsApp:</b> {arg1} kapısı <b>{wa_gate}</b>!", target_chat_id=chat_id)
                 execute_radar(target_flight=arg1, chat_id=chat_id)
                 continue
 
