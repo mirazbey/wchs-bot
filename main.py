@@ -42,6 +42,8 @@ class CloudHealthHandler(BaseHTTPRequestHandler):
                 "botUser": "@wchs_bot",
                 "cachedFlights": len(bot.cached_flights.get("arrivals", [])),
                 "customGatesCount": len(bot.custom_flight_gates),
+                "cachedGates": bot.custom_flight_gates,
+                "crawlerStats": bot.crawler_stats,
                 "userGate": bot.CONFIG.get("user_gate", "F3")
             }
             self._send_json(200, resp)

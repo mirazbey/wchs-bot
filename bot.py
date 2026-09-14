@@ -54,6 +54,13 @@ last_update_id = 0
 cached_flights = {"time": 0, "arrivals": [], "departures": [], "source": ""}
 custom_flight_gates = {}
 custom_gate_times = {}
+crawler_stats = {
+    "total_queries": 0,
+    "confirmed_gates": 0,
+    "last_flight": None,
+    "last_status": None,
+    "started_at": time.time()
+}
 bridge_client = GateBridgeClient(WA_BRIDGE_URL)
 telegram_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="TelegramQueries")
 telegram_slots = threading.BoundedSemaphore(6)
@@ -519,16 +526,23 @@ def background_arrival_gate_crawler():
 
                 status = bridge_client.status()
                 if status.get("connected"):
+                    crawler_stats["total_queries"] += 1
+                    crawler_stats["last_flight"] = flight_no
                     print(f"[*] [Crawler] iGA WhatsApp sorgulanıyor: {flight_no} ({flight_date})...", flush=True)
                     res = bridge_client.lookup(flight_no, date=flight_date, direction="arrival")
                     if res.get("success") and res.get("gate"):
                         gate = exact_gate(res.get("gate"))
                         if gate:
                             set_manual_gate(flight_no, gate)
+                            crawler_stats["confirmed_gates"] += 1
+                            crawler_stats["last_status"] = f"Doğrulandı ({gate})"
                             print(f"[+] [Crawler] Kapı doğrulandı: {flight_no} -> {gate}", flush=True)
                     else:
-                        print(f"[-] [Crawler] {flight_no} kapı henüz açıklanmamış: {res.get('status')}", flush=True)
+                        st = res.get("status", "Açıklanmadı")
+                        crawler_stats["last_status"] = f"Kapı yok ({st})"
+                        print(f"[-] [Crawler] {flight_no} kapı henüz açıklanmamış: {st}", flush=True)
                 else:
+                    crawler_stats["last_status"] = "Köprü bağlı değil"
                     print(f"[!] [Crawler] WhatsApp köprüsü henüz bağlı değil, bekleniyor...", flush=True)
                     time.sleep(15)
 
@@ -710,6 +724,43 @@ def handle_telegram_message(msg):
         CONFIG["selected_pier"] = None
         cached_flights["time"] = 0
         execute_radar(chat_id=chat_id)
+        return
+
+    elif raw_text in ["/durum", "/hafiza", "/stats", "📊 Durum", "🧠 Hafıza"]:
+        now_ist, _, _, _ = fetch_iga_direct_flights()
+        now_mono = time.monotonic()
+
+        cached_items = []
+        for fn, g in list(custom_flight_gates.items()):
+            t = custom_gate_times.get(fn, now_mono)
+            elapsed = now_mono - t
+            if elapsed < GATE_CACHE_TTL:
+                rem_min = int((GATE_CACHE_TTL - elapsed) // 60)
+                cached_items.append(f"• <b>{fn}</b> ➔ Kapı: <b>{g}</b> ({rem_min} dk kaldı)")
+
+        bridge_st = bridge_client.status()
+        active_f = bridge_st.get("active")
+        active_str = f"{active_f.get('flight')} ({active_f.get('state')})" if active_f else "Boşta"
+
+        msg = (
+            f"🧠 <b>WCHS Radar Hafıza & Canlı İstatistik</b>\n"
+            f"🕒 Saat: <b>{now_ist.strftime('%H:%M:%S')}</b>\n"
+            f"───────────────────────\n"
+            f"🚪 <b>Doğrulanmış Kapılar ({len(cached_items)} Uçuş):</b>\n"
+            f"{chr(10).join(cached_items) if cached_items else '<i>Şu an hafızada doğrulanmış geliş kapısı yok.</i>'}\n\n"
+            f"📊 <b>Arka Plan Tarayıcısı:</b>\n"
+            f"• Toplam Sorgu: <b>{crawler_stats['total_queries']}</b>\n"
+            f"• Doğrulanan Kapı: <b>{crawler_stats['confirmed_gates']}</b>\n"
+            f"• Son İncelenen: <b>{crawler_stats.get('last_flight') or '-'}</b> ({crawler_stats.get('last_status') or '-'})\n\n"
+            f"📡 <b>WhatsApp Köprüsü:</b> {'🟢 Bağlı' if bridge_st.get('connected') else '🔴 Bağlı Değil'}\n"
+            f"↳ Aktif İşlem: <b>{active_str}</b>\n"
+            f"↳ Sırada: <b>{bridge_st.get('queued', 0)}</b>\n\n"
+            f"⏳ <b>Hafıza Temizleme Süreleri (TTL):</b>\n"
+            f"• Doğrulanan Kapı: <b>30 Dakika (1800 sn)</b> sonra silinir.\n"
+            f"• Açıklanmamış Kapı: <b>3 Dakika (180 sn)</b> sonra tekrar taranır.\n"
+            f"• FIDS Havalimanı Tablosu: <b>40 Saniyede</b> bir tazelenir."
+        )
+        send_telegram(msg, target_chat_id=chat_id)
         return
 
     elif raw_text.startswith("📍 Konum"):
