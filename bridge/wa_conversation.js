@@ -75,6 +75,7 @@ class GateConversation {
     this.trusted = new Set([IGA_JID, '13817027252425@lid', ...trustedJids]);
     this.jobs = new Map(); this.cache = new Map(); this.queue = []; this.active = null;
     this.seen = new Set(); this.quietUntil = 0; this.pumpTimer = null;
+    this.liveAgentUntil = 0;
     this.needsCorrelation = false;
     this.events = Promise.resolve();
   }
@@ -85,6 +86,10 @@ class GateConversation {
       !['arrival', 'departure'].includes(direction) || Number.isNaN(Date.parse(date + 'T12:00:00Z')) ||
       new Date(date + 'T12:00:00Z').toISOString().slice(0, 10) !== date) {
       return { success: false, status: 'invalid_request', error: 'Geçersiz uçuş, tarih veya yön.' };
+    }
+    if (this.liveAgentUntil && this.now() < this.liveAgentUntil) {
+      const remainingMin = Math.ceil((this.liveAgentUntil - this.now()) / 60000);
+      return { success: false, status: 'live_agent_active', error: `iGA canlı destek devrede. ${remainingMin} dk boyunca mesaj gönderimi durduruldu.` };
     }
     // Purge finished jobs, retaining enough time for polling clients.
     for (const [id, j] of this.jobs) if (j.finishedAt && this.now() - j.finishedAt > 600000) this.jobs.delete(id);
@@ -212,7 +217,13 @@ class GateConversation {
     if (this.seen.size > 1000) this.seen.delete(this.seen.values().next().value);
     const j = this.active;
     const { text, choices, quotedId } = readMessage(msg.message);
+    const normalized = fold(text);
     if (!j) {
+      if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|ibrahim bey|ulasıyor|ulasiyor/i.test(normalized)) {
+        this.liveAgentUntil = this.now() + 15 * 60 * 1000;
+        this.queue = [];
+        this.logger?.('detected_live_agent_while_idle', { text: (text || '').slice(0, 80) });
+      }
       this.logger?.('ignored_no_active_job', { sender, text: (text || '').slice(0, 80) });
       this.pump(); return;
     }
@@ -221,11 +232,11 @@ class GateConversation {
       this.logger?.('ignored_clock_skew', { timestamp, startedAt: j.startedAt });
       return;
     }
-    const normalized = fold(text);
-    if (/musteri temsilci|canli destek/.test(normalized)) {
-      this.logger?.('detected_live_agent_redirect', { flight: j.flight });
-      this.send(IGA_JID, { text: 'Menü' }).catch(() => {});
-      this.finish(j, { success: false, status: 'live_agent_redirect', gate: null, error: 'iGA canlı desteğe yönlendirdi, menüye dönüldü.' });
+    if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz/i.test(normalized)) {
+      this.logger?.('detected_live_agent_redirect', { flight: j?.flight });
+      this.liveAgentUntil = this.now() + 15 * 60 * 1000;
+      this.queue = [];
+      this.finish(j, { success: false, status: 'live_agent_redirect', gate: null, error: 'iGA canlı desteğe yönlendirdi. Mesaj gönderimi 15 dk durduruldu.' });
       return;
     }
     const flights = [...text.toUpperCase().matchAll(/\b([A-Z]{2}\s*\d{1,4})\b/g)].map(m => normalizeFlight(m[1]));
@@ -283,7 +294,7 @@ class GateConversation {
     if (j.replied.has(step)) return;
     j.replied.add(step);
     const targetJid = IGA_JID;
-    const textToSend = fallback || choice?.title || '';
+    const textToSend = choice?.title || fallback || '';
     const content = { text: textToSend };
     this.logger?.('replying_step', { flight: j.flight, step, targetJid, textToSend });
     await this.sendStep(j, targetJid, content, `waiting_after_${step}`, msg);

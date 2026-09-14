@@ -216,6 +216,8 @@ app.get('/status', (req, res) => res.json({
   version: '2026-09-14-gate-flow-v3',
   cacheCount: engine.cache.size,
   queued: engine.queue.length,
+  liveAgentUntil: engine.liveAgentUntil,
+  liveAgentActive: Boolean(engine.liveAgentUntil && Date.now() < engine.liveAgentUntil),
   active: engine.active ? {
     flight: engine.active.flight,
     state: engine.active.state,
@@ -228,6 +230,8 @@ app.get('/debug', (req, res) => {
   res.json({
     connected: isConnected,
     version: '2026-09-14-gate-flow-v3',
+    liveAgentUntil: engine.liveAgentUntil,
+    liveAgentActive: Boolean(engine.liveAgentUntil && Date.now() < engine.liveAgentUntil),
     active: engine.active ? {
       id: engine.active.id,
       flight: engine.active.flight,
@@ -239,6 +243,12 @@ app.get('/debug', (req, res) => {
     queue: engine.queue.map(q => ({ flight: q.flight, state: q.state })),
     recentLogs
   });
+});
+
+app.post('/reset-live-agent', (req, res) => {
+  engine.liveAgentUntil = 0;
+  logBridge('live_agent_manually_reset', {});
+  res.json({ success: true, liveAgentUntil: 0 });
 });
 
 // Interactive raw test send

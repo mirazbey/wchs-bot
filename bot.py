@@ -491,8 +491,8 @@ def background_arrival_gate_crawler():
 
                 delta_min = (arr_time - now_ist).total_seconds() / 60.0
                 # Teker koyduktan sonra ~20 dk kapıya yanaşma payı (-25 dk)
-                # ve 15-20 dk içinde teker koyacak uçaklar (+20 dk)
-                if not (-25 <= delta_min <= 20):
+                # ve 15 dk içinde teker koyacak uçaklar (+15 dk)
+                if not (-25 <= delta_min <= 15):
                     continue
 
                 flight_no = f.get("flight_no") or ""
@@ -515,18 +515,30 @@ def background_arrival_gate_crawler():
                 candidates.append((abs(delta_min), f))
 
             if candidates:
+                status = bridge_client.status()
+                if status.get("liveAgentActive"):
+                    crawler_stats["last_status"] = "Canlı Destek Devrede (Durduruldu)"
+                    print("[!] [Crawler] Canlı destek devrede. iGA görevlisine mesaj gitmemesi için 120 sn bekleniyor...", flush=True)
+                    time.sleep(120)
+                    continue
+
                 candidates.sort(key=lambda x: x[0])
                 _, target_flight = candidates[0]
                 flight_no = target_flight["flight_no"]
                 flight_date = target_flight["arr_time"].date().isoformat()
                 recently_queried[flight_no] = now_mono
 
-                status = bridge_client.status()
                 if status.get("connected"):
                     crawler_stats["total_queries"] += 1
                     crawler_stats["last_flight"] = flight_no
                     print(f"[*] [Crawler] iGA WhatsApp sorgulanıyor: {flight_no} ({flight_date})...", flush=True)
                     res = bridge_client.lookup(flight_no, date=flight_date, direction="arrival")
+                    if res.get("status") in ["live_agent_active", "live_agent_redirect"]:
+                        crawler_stats["last_status"] = "Canlı Destek Devrede (Durduruldu)"
+                        print(f"[!] [Crawler] Canlı destek devrede algılandı: {res.get('error')}. 300 sn bekleniyor...", flush=True)
+                        time.sleep(300)
+                        continue
+
                     if res.get("success") and res.get("gate"):
                         gate = exact_gate(res.get("gate"))
                         if gate:
@@ -542,8 +554,10 @@ def background_arrival_gate_crawler():
                     crawler_stats["last_status"] = "Köprü bağlı değil"
                     print(f"[!] [Crawler] WhatsApp köprüsü henüz bağlı değil, bekleniyor...", flush=True)
                     time.sleep(15)
+                    continue
 
-                time.sleep(25)
+                # Güvenli tempo: iGA botunu boğmamak ve canlı desteğe yönlenmeyi önlemek için sorgular arası 75 saniye dinlen
+                time.sleep(75)
             else:
                 time.sleep(15)
 
@@ -724,7 +738,8 @@ def handle_telegram_message(msg):
             f"• Son İncelenen: <b>{crawler_stats.get('last_flight') or '-'}</b> ({crawler_stats.get('last_status') or '-'})\n\n"
             f"📡 <b>WhatsApp Köprüsü:</b> {'🟢 Bağlı' if bridge_st.get('connected') else '🔴 Bağlı Değil'}\n"
             f"↳ Aktif İşlem: <b>{active_str}</b>\n"
-            f"↳ Sırada: <b>{bridge_st.get('queued', 0)}</b>\n\n"
+            f"↳ Sırada: <b>{bridge_st.get('queued', 0)}</b>\n"
+            f"↳ Canlı Destek Kilidi: {'🔴 DEVREDE (Mesaj Gönderimi Durduruldu)' if bridge_st.get('liveAgentActive') else '🟢 Pasif (Normal Akış)'}\n\n"
             f"⏳ <b>Hafıza Temizleme Süreleri (TTL):</b>\n"
             f"• Doğrulanan Kapı: <b>30 Dakika (1800 sn)</b> sonra silinir.\n"
             f"• Açıklanmamış Kapı: <b>3 Dakika (180 sn)</b> sonra tekrar taranır.\n"
