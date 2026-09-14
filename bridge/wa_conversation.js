@@ -219,7 +219,7 @@ class GateConversation {
     const { text, choices, quotedId } = readMessage(msg.message);
     const normalized = fold(text);
     if (!j) {
-      if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|ibrahim bey|ulasıyor|ulasiyor/i.test(normalized)) {
+      if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|ibrahim bey|ulasıyor|ulasiyor/i.test(normalized)) {
         this.liveAgentUntil = this.now() + 15 * 60 * 1000;
         this.queue = [];
         this.logger?.('detected_live_agent_while_idle', { text: (text || '').slice(0, 80) });
@@ -232,7 +232,7 @@ class GateConversation {
       this.logger?.('ignored_clock_skew', { timestamp, startedAt: j.startedAt });
       return;
     }
-    if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz/i.test(normalized)) {
+    if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator/i.test(normalized)) {
       this.logger?.('detected_live_agent_redirect', { flight: j?.flight });
       this.liveAgentUntil = this.now() + 15 * 60 * 1000;
       this.queue = [];
