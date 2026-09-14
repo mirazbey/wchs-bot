@@ -17,11 +17,16 @@ PORT = int(os.environ.get("PORT", 8080))
 
 class CloudHealthHandler(BaseHTTPRequestHandler):
     def _send_json(self, status_code, data):
-        self.send_response(status_code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+        try:
+            body = json.dumps(data, default=str, ensure_ascii=False).encode("utf-8")
+            self.send_response(status_code)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            print(f"[!] HTTP send error: {e}", flush=True)
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -47,15 +52,29 @@ class CloudHealthHandler(BaseHTTPRequestHandler):
                 "source": src,
                 "arrivalsCount": len(arrs),
                 "departuresCount": len(deps),
-                "arrivals": arrs[:15],
-                "departures": deps[:15]
+                "arrivals": arrs[:20],
+                "departures": deps[:20]
             })
+            return
+
+        elif path.startswith("/api/gate/"):
+            flight_num = path.split("/api/gate/")[1].strip().upper().replace(" ", "")
+            now_ist, arrs, deps, src = bot.fetch_iga_direct_flights()
+            target = None
+            for f in arrs + deps:
+                if f.get("flight_no", "").replace(" ", "").upper() == flight_num:
+                    target = f
+                    break
+            if target:
+                self._send_json(200, {"success": True, "flight": target})
+            else:
+                self._send_json(404, {"success": False, "error": f"Flight {flight_num} not found"})
             return
 
         else:
             self._send_json(200, {
                 "service": "WCHS Radar Cloud API",
-                "endpoints": ["/health", "/api/radar"]
+                "endpoints": ["/health", "/api/radar", "/api/gate/{flightNumber}"]
             })
 
     def log_message(self, format, *args):
