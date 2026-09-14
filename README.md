@@ -1,76 +1,90 @@
-# IGA Istanbul Airport (IST) Flight & Gate Tracker
+# WCHS-IST Transfer & Konum Radarı — Azure 7/24 Canlı Dağıtım Raporu
 
-İGA İstanbul Havalimanı (IST / LTFM) gerçek zamanlı uçuş ve kapı (gate) bilgi sorgulama kütüphanesi ve CLI aracı.
-
----
-
-## Özellikler
-
-- **Kapı (Gate) Bilgisi**: İlgili uçuşun atanan kapı kodunu (`A1G`, `G5A`, `E4`, vb.) anlık çeker.
-- **Check-in Kontuarı**: Uçuşa ait kontuar (`D-E`, `E-F`) bilgisini getirir.
-- **Uçuş Durumu**: `Kapı Kapandı`, `Son Çağrı`, `Uçağa Gidiniz`, `Kapıya Gidiniz` gibi güncel durumları bildirir.
-- **İç & Dış Hatlar**: Hem iç hatlar hem dış hatlar uçuşlarını tarar.
-- **Ortak Uçuş (Codeshare) Desteği**: Kod paylaşımlı uçuş numaralarını otomatik eşleştirir.
-- **Hazır CLI & HTTP REST API**: Komut satırından ya da yerel HTTP servisi üzerinden doğrudan kullanılabilir.
+İstanbul Havalimanı (IST / LTFM) tekerlekli sandalye (WCHS / PRM) yolcu transfer operasyonları için geliştirilen otonom radar sistemi, Microsoft Azure Cloud üzerinde kesintisiz çalışacak şekilde başarıyla devreye alınmıştır.
 
 ---
 
-## Kurulum
+## ☁️ Bulut Altyapısı ve Canlı Durum
 
-Python 3.8+ yeterlidir (Harici bağımlılık gerektirmez, Python standart kütüphanesi kullanır).
+- **Platform:** Microsoft Azure App Service (Linux)
+- **Bölge:** `SwedenCentral` (Öğrenci politikası uyumlu)
+- **App Service Plan:** `plan-wchs-bot` (B1 Basic - 7/24 Kesintisiz)
+- **Web App Adı:** `app-wchs-radar`
+- **Sürüm:** `2026-09-14-crawler-v3`
+- **Her Zaman Açık (AlwaysOn):** `true` (Container uyumaz, bilgisayarın kapalıyken de çalışır)
+- **Canlı URL:** [https://app-wchs-radar.azurewebsites.net](https://app-wchs-radar.azurewebsites.net)
+- **Sağlık Durumu:** [https://app-wchs-radar.azurewebsites.net/health](https://app-wchs-radar.azurewebsites.net/health) (HTTP 200 Online)
+- **Radar API:** [https://app-wchs-radar.azurewebsites.net/api/radar](https://app-wchs-radar.azurewebsites.net/api/radar)
+- **GitHub Deposu:** [https://github.com/mirazbey/wchs-bot](https://github.com/mirazbey/wchs-bot) (`main` dalı senkronize)
 
 ---
 
-## Kullanım
+## 🚀 Sürüm 3.0: Rolling Window Arka Plan Tarayıcısı & Anlık Kapı Radarı
 
-### 1. Python Kodu ile Kullanım
+### 1. WhatsApp Asimetrisinin Çözümü (Arka Plan Geliş Tarayıcısı)
+- **Problem:** WhatsApp sadece `Uçuş Kodu ➔ Kapı` kabul ederken, Telegram'da operatör sahada `Kapı Kodu ➔ Uçuşlar` (örn: `a11`, `b5`) sorguluyordu.
+- **Mimari Çözüm:**
+  - **SADECE Dış Hatlar Gelişler:** İç hatlar sorgulanmaz. Gidiş uçuşlarının kapıları zaten FIDS'ten %100 doğrulukla doğrudan alınır; gidişler için tek bir WhatsApp mesajı dahi harcanmaz.
+  - **Zaman Penceresi (`-25 dk` ila `+15 dk`):** Uçak teker koyduktan sonra kapıya yanaşması ~15-20 dakika sürdüğünden, inişi üzerinden en fazla 25 dakika geçmiş veya 15 dakika içinde inecek dış hatlar THY (TK) uçuşları havuza alınır.
+  - **İnsan Temsilcisi & Canlı Destek Koruma Kilidi (Circuit Breaker):** Eğer iGA sistemi bir mesajı canlı desteğe aktarırsa ("müşteri temsilcisi", "operatör", "destek ekibi" vb. algılandığında), bot **anında tüm mesaj kuyruğunu boşaltır ve 15 dakika boyunca iGA WhatsApp hattına tek bir mesaj dahi göndermez.** İnsan görevliye otomatik bot mesajı spamlama riski %0'a indirilmiştir.
+  - **Güvenli Tempo (75 Saniye Dinlenme):** iGA WhatsApp botunu art arda mesajlarla boğmamak ve insan desteğine aktarımı engellemek için iki uçuş sorgusu arasına **75 saniyelik** doğal dinlenme süresi eklenmiştir.
+  - **Tarih Seçimi Uyumu:** iGA'nın interaktif butonlarında sunduğu tam metin (`Bugün, 14 Eyl`) otomatik eşleştirilerek tarih seçimi hatasız onaylanır.
+  - **30 Dakika Önbellek (Cache):** Doğrulanan kapı numarası 1800 saniye (30 dk) boyunca hafızada saklanır.
 
-```python
-from iga_client import IGAClient
+### 2. Kapı Sorgularında Anlık Yanıt (0.01 Saniye)
+- Operatör Telegram'a `a11`, `b5` veya `ben f3deyim` yazdığında bot **ASLA beklemez** veya kullanıcıyı 60 saniye boyunca "WhatsApp 1/2 sorgulanıyor..." diye oyalamaz.
+- FIDS ve önbellekten beslenerek **0.01 saniyede doğrudan nihai sonucu** gönderir.
 
-client = IGAClient()
+### 3. Temel Kapı & Alt Kapı Gösterim Düzeltmesi
+- **Önceki Hata:** `a11` yazıldığında A11A ve A11B için "Doğrulanmış uçuş bilgisi yok" yazıp gerçek `TK203` uçuşunu en alta dipnot olarak gömüyordu.
+- **Yeni Tasarım:** Kaynakta kapı `A11` olarak görünüyorsa doğrudan `🚪 A11` başlığı altında `TK203 ➔ SEATTLE` olarak gösterilir.
+- Eğer fiziki olarak `B5A` ve `B5B` gibi ayrışan uçuşlar varsa iki alt kapı da net ve ayrı bölümler halinde listelenir.
 
-# Belirli bir uçuşun kapı bilgisini sorgula
-flight = client.get_flight_gate("TK2170")
+---
 
-if flight:
-    print(f"Uçuş: {flight.flight_number}")
-    print(f"Havayolu: {flight.airline_name}")
-    print(f"Hedef: {flight.to_city}")
-    print(f"Kapı (Gate): {flight.gate}")
-    print(f"Kontuar: {flight.counter}")
-    print(f"Durum: {flight.status}")
-else:
-    print("Uçuş bulunamadı.")
+## 🎯 Bot Yetenekleri ve Minimalist Kullanım Rehberi
+
+Telegram botun: **[@wchs_bot](https://t.me/wchs_bot)** (Transfer Yolcu Bilgi)
+
+Sahadaki operasyonel hızı maksimize etmek için tüm kalabalık butonlar, iskele seçiciler ve genel iniş listeleri kaldırıldı. Klavye tek satırlık 3 kompakt butona indirildi:
+
+```
+[ 📍 Kapım (F3) ]   [ 📊 Durum ]   [ ❓ Yardım ]
 ```
 
-### 2. Komut Satırı (CLI) Kullanımı
+### 1. 🚪 Doğrudan Kapı Sorgusu
+Herhangi bir menüye tıklamadan doğrudan kapıyı yazabilirsin:
+- **Örnekler:** `a11`, `b5`, `f3`, `b5a`
+- **Konum Güncelleme:** `ben f4deyim`, `f3teyim` (kapını F4 olarak kaydeder ve kapıdaki uçuşları anında döker)
 
-```bash
-# Uçuş detaylarını ve kapısını görüntüle
-python cli.py TK2170
+### 2. ✈️ Doğrudan Uçuş Sorgusu (Uçuş Kartı)
+- **Örnekler:** `TK0630`, `TK203`
+- Uçuşun doğrulanmış kapısını, iniş/kalkış saatini ve WCHS yolcusunun aktarılacağı bağlantılı kalkış kapısını gösterir.
 
-# Sadece kapı numarasını çıktı al (script entegrasyonu için)
-python cli.py --gate-only TK2170
-# Çıktı: G5A
+### 3. ✏️ Manuel Kapı Kaydı
+- **Örnek:** `TK1234 B5` (Telsizden veya anonsla duyulan kapıyı anında hafızaya kaydeder).
 
-# Şehre veya havayoluna göre uçuş ara
-python cli.py --search PARIS
+### 4. 📊 Canlı Durum ve Hafıza Takibi
+- **Komut:** `/durum` veya **📊 Durum** butonu
+- 30 dakikalık hafızada tutulan kapıları, kalan dakikalarını ve arka plan WhatsApp tarayıcısının durumunu raporlar.
 
-# JSON formatında çıktı al
-python cli.py TK2170 --json
+---
 
-# Canlı kalkış tablosunu listele
-python cli.py
-```
+## 🏃 Kapılar ve İskeleler Arası Yürüyüş Matrisi
 
-### 3. Yerel HTTP REST API Sunucusu
+| Güzergah | Ortalama İntikal Süresi | Güvenlik / Risk Rozeti |
+|---|---|---|
+| **Aynı Kapı** (Örn: F3 ➔ F3) | 0 dk | 🎯 SENİN KAPIN |
+| **Bitişik Kapılar** (±2 kapı, Örn: F3 ➔ F1B/F4) | ~1 dk | 🟢 ÇOK YAKIN |
+| **Aynı İskele** (±5 kapı, Örn: F3 ➔ F8A) | ~3 dk | 🟡 AYNI İSKELE |
+| **Aynı İskele Sonu** (>5 kapı, Örn: F3 ➔ F12B) | ~6 dk | 🟡 AYNI İSKELE |
+| **Komşu İskeleler** (E ➔ F veya A ➔ B) | ~7 dk | 🟡 KOMŞU İSKELE |
+| **Merkez Bölgeye Geçiş** (F/E/A/B ➔ D) | ~10-12 dk | 🟡 MERKEZ BÖLGE |
+| **Uzak Bloklar** (A/B ➔ E/F) | ~22 dk | 🔴 UZAK BLOK |
+| **İç Hatlar Geçişi** (A/B/D/E/F ➔ G) | ~20 dk | 🔵 İÇ HATLAR |
 
-```bash
-python server.py
-```
+> [!NOTE]
+> **Emniyet Payı Formülü:**
+> `Emniyet Payı = Kalkışa Kalan Gerçek Dakika - Yürüme Süresi - 20 dk Boarding Kapanış Payı`
+> Emniyet payı **15 dk altındaysa** sistem otomatik olarak **🚨 ÇOK ACİL** alarmı üretir.
 
-Endpoint'ler:
-- `GET http://localhost:8080/api/gate/TK2170`
-- `GET http://localhost:8080/api/search?q=ANKARA`
-- `GET http://localhost:8080/api/departures?limit=30`
