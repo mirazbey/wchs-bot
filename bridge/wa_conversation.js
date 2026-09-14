@@ -61,7 +61,7 @@ function parseGate(text) {
   }
   if (gates.size === 1) return { status: 'confirmed', gate: [...gates][0] };
   if (gates.size > 1) return { status: 'ambiguous', gate: null };
-  if (/not available yet|not announced|henuz (?:aciklanmadi|belirlenmedi)|belirlenmemistir/.test(normalized)) return { status: 'not_announced', gate: null };
+  if (/not available yet|not announced|henuz (?:aciklanmadi|belirlenmedi)|belirlenmemistir|takip edilemiyor|bilgisi \*?kalkti/.test(normalized)) return { status: 'not_announced', gate: null };
   if (/bulunamadi|bulamadi|bulamadim|kayit bulunmamaktadir|boyle bir ucus|gecersiz|no flight found|tekrar yazarak yeniden denemek/.test(normalized)) return { status: 'not_found', gate: null };
   const pier = normalized.match(/(?:ucus kapiniz|kapiniz|kapi|gate(?: is)?)\s*[:：=-]*\s*([a-g])(?![a-z0-9])/);
   return pier ? { status: 'partial', gate: null, pier: pier[1].toUpperCase() } : null;
@@ -76,7 +76,6 @@ class GateConversation {
     this.jobs = new Map(); this.cache = new Map(); this.queue = []; this.active = null;
     this.seen = new Set(); this.quietUntil = 0; this.pumpTimer = null;
     this.liveAgentUntil = 0;
-    this.needsCorrelation = false;
     this.events = Promise.resolve();
   }
 
@@ -130,7 +129,6 @@ class GateConversation {
     this.clearTimer(j.timer);
     j.timer = this.setTimer(() => {
       if (this.active !== j) return;
-      this.needsCorrelation = true;
       this.finish(j, { success: false, status: j.partial ? 'partial' : 'timeout', gate: null,
         error: j.partial ? 'Tam kapı numarası doğrulanamadı.' : 'WhatsApp yanıtı zamanında tamamlanmadı.' });
     }, Math.max(1, Math.min(this.stepMs, j.deadline - this.now())));
@@ -158,8 +156,7 @@ class GateConversation {
     } catch (err) {
       this.logger?.('send_step_error', { flight: j.flight, error: err.message });
       if (this.active === j) {
-        this.needsCorrelation = true;
-        this.finish(j, { success: false, status: 'send_failed', error: 'WhatsApp mesajı gönderilemedi.' });
+          this.finish(j, { success: false, status: 'send_failed', error: 'WhatsApp mesajı gönderilemedi.' });
       }
     }
   }
@@ -179,7 +176,6 @@ class GateConversation {
   }
 
   disconnect() {
-    this.needsCorrelation = true;
     const active = this.active;
     // Empty the queue before finish() can start another request.
     const waiting = this.queue.splice(0);
@@ -194,8 +190,7 @@ class GateConversation {
     this.events = this.events.then(() => this.handle(msg, type)).catch(err => {
       this.logger?.('receive_error', { error: err.message });
       if (this.active) {
-        this.needsCorrelation = true;
-        this.finish(this.active, { success: false, status: 'processing_error', error: 'WhatsApp yanıtı işlenemedi.' });
+          this.finish(this.active, { success: false, status: 'processing_error', error: 'WhatsApp yanıtı işlenemedi.' });
       }
     });
     return this.events;
@@ -219,7 +214,7 @@ class GateConversation {
     const { text, choices, quotedId } = readMessage(msg.message);
     const normalized = fold(text);
     if (!j) {
-      if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|ibrahim bey|ulasıyor|ulasiyor/i.test(normalized)) {
+      if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|nasil yardimci olabilirim|ibrahim bey|ulasıyor|ulasiyor/i.test(normalized)) {
         this.liveAgentUntil = this.now() + 15 * 60 * 1000;
         this.queue = [];
         this.logger?.('detected_live_agent_while_idle', { text: (text || '').slice(0, 80) });
@@ -232,7 +227,7 @@ class GateConversation {
       this.logger?.('ignored_clock_skew', { timestamp, startedAt: j.startedAt });
       return;
     }
-    if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator/i.test(normalized)) {
+    if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|nasil yardimci olabilirim/i.test(normalized)) {
       this.logger?.('detected_live_agent_redirect', { flight: j?.flight });
       this.liveAgentUntil = this.now() + 15 * 60 * 1000;
       this.queue = [];
@@ -248,9 +243,8 @@ class GateConversation {
     this.logger?.('msg_matched', { flight: j.flight, textPreview: (text || '').slice(0, 100), choices: choices.map(c => c.title) });
 
     const result = parseGate(text);
-    if (result && (!this.needsCorrelation || j.correlated)) {
+    if (result) {
       if (result.status === 'confirmed') {
-        this.needsCorrelation = false;
         this.finish(j, { success: true, ...result }); return;
       }
       if (['not_announced', 'not_found', 'ambiguous'].includes(result.status)) {
