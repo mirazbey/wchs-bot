@@ -85,5 +85,39 @@ class TestGateFlow(unittest.TestCase):
         ]
         self.assertEqual(in_window, ['TK1', 'TK2'])
 
+    def test_gate_potential_departures(self):
+        now = bot.get_now_ist()
+        arrs = [{
+            'flight_no': 'TK1898',
+            'origin_name': 'VİYANA',
+            'origin_iata': 'VIE',
+            'arr_time': now - timedelta(minutes=15),
+            'gate': 'B5',
+            'source_gate': 'B5',
+            'is_oss': True,
+            'status': 'İndi'
+        }]
+        deps = [{
+            'flight_no': 'TK1821',
+            'dest': 'PARİS',
+            'dest_iata': 'CDG',
+            'dep_time': now + timedelta(minutes=45),
+            'gate': 'A11',
+            'source_gate': 'A11',
+            'status': 'Boarding'
+        }]
+        radar = bot.render_gate_radar('B5', arrs, deps)
+        self.assertIn('Potansiyel Gidişler (İlk 2 Saat)', radar)
+        self.assertIn('TK1821', radar)
+        self.assertIn('A11', radar)
+        self.assertIn('taksi', radar)
+
+    def test_departures_intent(self):
+        intent1, a1, _ = bot.parse_user_intent('gidişler')
+        self.assertEqual(intent1, 'DEPARTURES')
+        intent2, a2, _ = bot.parse_user_intent('a gidiş')
+        self.assertEqual(intent2, 'DEPARTURES_PIER')
+        self.assertEqual(a2, 'A')
+
 if __name__ == '__main__':
     unittest.main()

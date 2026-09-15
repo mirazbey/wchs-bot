@@ -393,7 +393,8 @@ def get_main_keyboard():
     curr = CONFIG.get("user_gate", "F3")
     return {
         "keyboard": [
-            [{"text": f"📍 Kapım ({curr})"}, {"text": "📊 Durum"}, {"text": "❓ Yardım"}]
+            [{"text": f"📍 Kapım ({curr})"}, {"text": "🛫 Gidişler"}],
+            [{"text": "📊 Durum"}, {"text": "❓ Yardım"}]
         ],
         "resize_keyboard": True
     }
@@ -498,8 +499,34 @@ def render_gate_radar(user_gate, arrivals, departures, note=""):
         if base_flights:
             sections.append(f"ℹ️ {base_gate} Ana Kapı: " + ", ".join(html.escape(f['flight_no']) for f in base_flights[:3]))
 
+    # 🚖 Potansiyel Aktarma / Taksi Gidişleri (İlk 2 Saat)
+    pot_deps = []
+    for d in departures:
+        dep_g = exact_gate(d.get("gate"))
+        if not dep_g or dep_g.startswith("G") or dep_g in relevant_gates:
+            continue
+        rem_min = (d["dep_time"] - now_ist).total_seconds() / 60.0
+        if 15 <= rem_min <= 120:
+            w_min, dist_tag = calc_gate_dist(gate, dep_g)
+            pot_deps.append((rem_min, d, dep_g, w_min))
+
+    pot_deps.sort(key=lambda x: x[0])
+
+    pot_section = []
+    if pot_deps:
+        pot_section.append("🚖 <b>Potansiyel Gidişler (İlk 2 Saat):</b>")
+        for rem_min, d, dep_g, w_min in pot_deps[:4]:
+            status_str = f" · <i>{d['status']}</i>" if d.get("status") else ""
+            pot_section.append(
+                f"• 🚪 <b>{dep_g}</b> ➔ <b>{d['flight_no']}</b> · {html.escape(d['dest'])} · "
+                f"<b>{d['dep_time']:%H:%M}</b> ({int(rem_min)} dk{status_str}) [~{w_min} dk taksi]"
+            )
+        pot_section.append("💡 <i>Tüm liste için aşağıdaki <b>🛫 Gidişler</b> butonuna basabilirsin.</i>")
+
     header = f"📍 <b>{gate}</b> | 🕒 {now_ist:%H:%M}"
     parts = [header] + sections
+    if pot_section:
+        parts.append("\n".join(pot_section))
     if note:
         parts.append(html.escape(note))
     return "\n\n".join(parts)
@@ -513,6 +540,48 @@ def execute_proximity_radar(user_gate="F3", chat_id=None):
     CONFIG["user_gate"] = user_gate
     now_ist, arrivals, departures, _ = fetch_iga_direct_flights()
     send_telegram(render_gate_radar(user_gate, arrivals, departures), target_chat_id=chat_id)
+
+
+def execute_departures_radar(pier=None, chat_id=None):
+    now_ist, _, departures, _ = fetch_iga_direct_flights()
+    curr_gate = CONFIG.get("user_gate", "F3")
+
+    active_deps = []
+    for d in departures:
+        gate = exact_gate(d.get("gate"))
+        if not gate or gate.startswith("G"):
+            continue
+        if pier and not gate.startswith(pier):
+            continue
+        rem_min = (d["dep_time"] - now_ist).total_seconds() / 60.0
+        if 10 <= rem_min <= 130:
+            w_min, dist_tag = calc_gate_dist(curr_gate, gate)
+            active_deps.append((rem_min, d, gate, w_min, dist_tag))
+
+    active_deps.sort(key=lambda x: x[0])
+
+    pier_title = f"{pier} İskelesi " if pier else ""
+    header = (
+        f"🛫 <b>DIŞ HATLAR GİDİŞ RADARI ({pier_title}İlk 2 Saat)</b>\n"
+        f"🕒 Saat: <b>{now_ist.strftime('%H:%M')}</b> | 📍 Konumun: <b>{curr_gate}</b>\n"
+        f"───────────────────────\n"
+    )
+
+    if not active_deps:
+        msg = header + f"<i>Önümüzdeki 2 saat içinde {pier_title}kapısı belli aktif gidiş bulunamadı.</i>"
+        send_telegram(msg, target_chat_id=chat_id)
+        return
+
+    lines = []
+    for rem_min, d, gate, w_min, dist_tag in active_deps[:14]:
+        status_suffix = f" · <i>{d['status']}</i>" if d.get("status") else ""
+        lines.append(
+            f"• 🚪 <b>{gate}</b> ➔ <b>{d['flight_no']}</b> · {html.escape(d['dest'])} · "
+            f"<b>{d['dep_time']:%H:%M}</b> (<b>{int(rem_min)} dk</b>{status_suffix}) [~{w_min} dk taksi]"
+        )
+
+    footer = f"\n\n💡 <i>İskele bazlı hızlı filtre için: <code>A Gidiş</code>, <code>B Gidiş</code>, <code>D Gidiş</code>, <code>F Gidiş</code> yazabilirsin.</i>"
+    send_telegram(header + "\n".join(lines) + footer, target_chat_id=chat_id)
 
 
 def background_arrival_gate_crawler():
@@ -699,7 +768,7 @@ def execute_radar(custom_gate=None, target_flight=None, chat_id=None):
 
 def parse_user_intent(raw_text: str):
     t = raw_text.strip()
-    t_clean = t.upper().replace("İ", "I")
+    t_clean = t.upper().replace("İ", "I").replace("Ş", "S").replace("Ç", "C").replace("Ğ", "G").replace("Ö", "O").replace("Ü", "U")
 
     if "TK" in t_clean:
         m_fg = re.search(r"(TK\s*\d+).*?\b([A-G])\s*(\d+[A-Z]?)\b", t_clean)
@@ -724,7 +793,15 @@ def parse_user_intent(raw_text: str):
         gate = f"{pier}{num}{sub}"
         return "PROXIMITY", gate, None
 
+    # İskele bazlı gidiş sorguları: "A GİDİŞ", "B GİDİŞLER", "D GİDİŞİ", "F KALKIŞ"
+    m_pier_dep = re.search(r"\b([A-G])\s*(?:ISKELE|ISKELESI)?\s*(?:GIDIS|GIDISLER|KALKIS|KALKISLAR)\b", t_clean)
+    if m_pier_dep:
+        return "DEPARTURES_PIER", m_pier_dep.group(1).upper(), None
+
     t_lower = t.lower()
+    if any(k in t_lower for k in ["gidiş", "gidis", "kalkış", "kalkis", "/gidisler", "/gidis"]):
+        return "DEPARTURES", None, None
+
     if any(k in t_lower for k in ["iniş", "inis", "gelen", "şuanki", "şu anki", "şuan"]):
         return "ARRIVALS", None, None
 
@@ -750,17 +827,20 @@ def handle_telegram_message(msg):
     if raw_text in ["/start", "/help", "/yardim", "❓ Yardım", "yardım"]:
         curr = CONFIG.get("user_gate", "F3")
         welcome = (
-            "👋 <b>WCHS-IST Transfer & Kapı Asistanı</b>\n\n"
-            "Tüm karmaşık menüler kaldırıldı. Doğrudan yazabilirsin:\n\n"
-            "🚪 <b>Kapı Sorgula:</b>\n"
-            "• <code>a11</code>, <code>b5</code>, <code>f3</code>, <code>b5a</code>\n"
+            "👋 <b>WCHS-IST Transfer & Taksi Asistanı</b>\n\n"
+            "Tekerlekli sandalye & taksi (buggy) hizmeti için optimize edildi:\n\n"
+            "🚪 <b>Kapı Sorgula (Geliş + Potansiyel Gidişler):</b>\n"
+            "• <code>b5</code>, <code>a11</code>, <code>f3</code>, <code>b5a</code>\n"
             "• <code>ben f4deyim</code> (konumunu kaydeder ve kapıyı listeler)\n\n"
+            "🛫 <b>Dış Hat Gidiş Radarı (İlk 2 Saat):</b>\n"
+            "• Menüdeki <b>🛫 Gidişler</b> butonuna bas\n"
+            "• İskele için: <code>a gidiş</code>, <code>b gidiş</code>, <code>d gidiş</code>, <code>f gidiş</code>\n\n"
             "✈️ <b>Uçuş Sorgula:</b>\n"
-            "• <code>TK0630</code>, <code>TK203</code> (kapı, iniş/kalkış ve aktarma kartı)\n\n"
+            "• <code>TK0630</code>, <code>TK1826</code> (kapı, iniş/kalkış ve aktarma kartı)\n\n"
             "✏️ <b>Manuel Kapı Kaydet:</b>\n"
             "• <code>TK1234 B5</code>\n\n"
             "📊 <b>Canlı Hafıza & Sayaç:</b>\n"
-            f"• <code>/durum</code> veya aşağıdaki <b>📊 Durum</b> butonu\n\n"
+            "• <code>/durum</code> veya menüdeki <b>📊 Durum</b> butonu\n\n"
             f"📍 <i>Şu an kayıtlı kapın: <b>{curr}</b></i>"
         )
         send_telegram(welcome, target_chat_id=chat_id)
@@ -807,6 +887,10 @@ def handle_telegram_message(msg):
     elif raw_text.startswith("📍 Kapım") or raw_text.startswith("📍 Konum") or raw_text in ["🔄 Yenile", "/yenile", "/tara"]:
         curr = CONFIG.get("user_gate", "F3")
         execute_proximity_radar(user_gate=curr, chat_id=chat_id)
+        return
+
+    elif raw_text in ["🛫 Gidişler", "/gidisler", "/gidis", "gidişler", "gidisler", "gidiş", "gidis", "kalkış", "kalkis"]:
+        execute_departures_radar(chat_id=chat_id)
         return
 
     intent, arg1, arg2 = parse_user_intent(raw_text)
@@ -856,6 +940,14 @@ def handle_telegram_message(msg):
         )
         return
 
+    elif intent == "DEPARTURES":
+        execute_departures_radar(chat_id=chat_id)
+        return
+
+    elif intent == "DEPARTURES_PIER":
+        execute_departures_radar(pier=arg1, chat_id=chat_id)
+        return
+
     else:
         ai_reply = ask_gpt4o_mini(raw_text, chat_id=chat_id)
         send_telegram(ai_reply, target_chat_id=chat_id)
@@ -878,8 +970,14 @@ def handle_telegram_updates():
 
         for update in data.get("result", []):
             last_update_id = update["update_id"]
-            msg = update.get("message", {})
-            if not msg.get("text"):
+            msg = update.get("message")
+            if not msg:
+                cb = update.get("callback_query")
+                if cb:
+                    msg = cb.get("message", {})
+                    msg["text"] = cb.get("data", "")
+                    msg["chat"] = cb.get("message", {}).get("chat", {})
+            if not msg or not msg.get("text"):
                 continue
             if telegram_slots.acquire(blocking=False):
                 telegram_worker.submit(process_telegram_message, msg)
