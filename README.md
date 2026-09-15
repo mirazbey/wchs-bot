@@ -28,7 +28,10 @@
   - **Zaman Penceresi (`-25 dk` ila `+15 dk`):** Uçak teker koyduktan sonra kapıya yanaşması ~15-20 dakika sürdüğünden, inişi üzerinden en fazla 25 dakika geçmiş veya 15 dakika içinde inecek dış hatlar THY (TK) uçuşları havuza alınır.
   - **İnsan Temsilcisi & Canlı Destek Koruma Kilidi (Circuit Breaker):** Eğer iGA sistemi bir mesajı canlı desteğe aktarırsa ("müşteri temsilcisi", "operatör", "destek ekibi" vb. algılandığında), bot **anında tüm mesaj kuyruğunu boşaltır ve 15 dakika boyunca iGA WhatsApp hattına tek bir mesaj dahi göndermez.** İnsan görevliye otomatik bot mesajı spamlama riski %0'a indirilmiştir.
   - **Güvenli Tempo (75 Saniye Dinlenme):** iGA WhatsApp botunu art arda mesajlarla boğmamak ve insan desteğine aktarımı engellemek için iki uçuş sorgusu arasına **75 saniyelik** doğal dinlenme süresi eklenmiştir.
-  - **Tarih Seçimi Uyumu:** iGA'nın interaktif butonlarında sunduğu tam metin (`Bugün, 14 Eyl`) otomatik eşleştirilerek tarih seçimi hatasız onaylanır.
+  - **Doğrudan Uçuş Kodu Gönderimi:** Cümle kalıpları yerine doğrudan `TK...` kodu gönderilerek iGA'nın otomatik yanıt motoruyla %100 uyum sağlandı.
+  - **Kapı Soneki Dönüşümü (Left / Right):** Havalimanı körük yapısındaki `Left (L) ➔ B` ve `Right (R) ➔ A` eşleşmesi entegre edildi. `F8L` kapısı otomatik olarak `F8B` olarak hafızaya alınır ve Telegram'da `f8`, `f8b` veya `f8l` sorgularının tümüyle anında eşleşir.
+  - **Ön Ek ve Benzer Uçuş Koruması:** iGA benzer bir uçuş önerdiğinde (örn: `TK274` yerine `TK2746`) işlem anında `not_found` ile kapatılarak oturumun kilitlenmesi önlenir.
+  - **Tarih Seçimi Uyumu:** iGA'nın interaktif butonlarında sunduğu tam metin (`Bugün, 15 Eyl`) otomatik eşleştirilerek tarih seçimi hatasız onaylanır.
   - **30 Dakika Önbellek (Cache):** Doğrulanan kapı numarası 1800 saniye (30 dk) boyunca hafızada saklanır.
 
 ### 2. Kapı Sorgularında Anlık Yanıt (0.01 Saniye)
