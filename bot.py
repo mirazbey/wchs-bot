@@ -252,13 +252,30 @@ def fetch_iga_direct_flights():
                 raw_arr.extend(data_arr2.get("result", {}).get("data", {}).get("flights", []))
             except Exception:
                 pass
+
+        # Gece yarısı geçişi: Saat 20:00'den sonraysa ertesi günün ilk gelişlerini de ekle
+        if now_ist.hour >= 20:
+            tomorrow_arr_start = (now_ist + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+            try:
+                data_arr_tom = _post(nature=0, page_size=50, start_date=tomorrow_arr_start)
+                raw_arr.extend(data_arr_tom.get("result", {}).get("data", {}).get("flights", []))
+            except Exception:
+                pass
+        elif now_ist.hour < 2:
+            yesterday_arr_start = (now_ist - timedelta(days=1)).strftime("%Y-%m-%dT23:00:00")
+            try:
+                data_arr_yest = _post(nature=0, page_size=50, start_date=yesterday_arr_start)
+                raw_arr.extend(data_arr_yest.get("result", {}).get("data", {}).get("flights", []))
+            except Exception:
+                pass
+
         for item in raw_arr:
             origin_iata = str(item.get("fromCityCode") or "").strip().upper()
             arr_dt = parse_iso_dt(item.get("estimatedDatetime")) or parse_iso_dt(item.get("scheduledDatetime"))
             if arr_dt:
                 raw_flight_no = str(item.get("flightNumber") or "TK").strip().upper()
                 flight_no = normalize_flight(raw_flight_no)
-                dedup_key = f"{origin_iata}_{arr_dt.strftime('%H%M')}_{flight_no}"
+                dedup_key = f"{origin_iata}_{arr_dt.strftime('%Y%m%d%H%M')}_{flight_no}"
                 if dedup_key not in seen_arr:
                     seen_arr.add(dedup_key)
                     gate_raw = str(item.get("gate") or "").strip()
@@ -284,13 +301,38 @@ def fetch_iga_direct_flights():
     departures = []
     seen_dep = set()
     try:
-        data_dep = _post(nature=1, page_size=40)
+        start_dep_iso = (now_ist - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S")
+        data_dep = _post(nature=1, page_size=50, start_date=start_dep_iso)
         raw_dep = data_dep.get("result", {}).get("data", {}).get("flights", [])
         last_date = raw_dep[-1].get("scheduledDatetime") if raw_dep else ""
         if last_date:
             try:
-                data_dep2 = _post(nature=1, page_size=40, start_date=last_date, button="moreFlight")
+                data_dep2 = _post(nature=1, page_size=50, start_date=last_date, button="moreFlight")
                 raw_dep.extend(data_dep2.get("result", {}).get("data", {}).get("flights", []))
+            except Exception:
+                pass
+
+        # Gece yarısı geçişi (Midnight Rollover): 20:00'den sonraysa ertesi günün ilk uçuşlarını da çek
+        if now_ist.hour >= 20:
+            tomorrow_dep_start = (now_ist + timedelta(days=1)).strftime("%Y-%m-%dT00:00:00")
+            try:
+                data_dep_tom = _post(nature=1, page_size=50, start_date=tomorrow_dep_start)
+                raw_dep_tom = data_dep_tom.get("result", {}).get("data", {}).get("flights", [])
+                raw_dep.extend(raw_dep_tom)
+                last_tom = raw_dep_tom[-1].get("scheduledDatetime") if raw_dep_tom else ""
+                if last_tom:
+                    try:
+                        data_dep_tom2 = _post(nature=1, page_size=50, start_date=last_tom, button="moreFlight")
+                        raw_dep.extend(data_dep_tom2.get("result", {}).get("data", {}).get("flights", []))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+        elif now_ist.hour < 2:
+            yesterday_dep_start = (now_ist - timedelta(days=1)).strftime("%Y-%m-%dT23:00:00")
+            try:
+                data_dep_yest = _post(nature=1, page_size=50, start_date=yesterday_dep_start)
+                raw_dep.extend(data_dep_yest.get("result", {}).get("data", {}).get("flights", []))
             except Exception:
                 pass
 
@@ -305,7 +347,7 @@ def fetch_iga_direct_flights():
 
             if dep_dt:
                 flight_no = normalize_flight(item.get("flightNumber", "TK"))
-                dedup_key = f"{dest_iata}_{dep_dt.strftime('%H%M')}_{flight_no}"
+                dedup_key = f"{dest_iata}_{dep_dt.strftime('%Y%m%d%H%M')}_{flight_no}"
                 if dedup_key not in seen_dep:
                     seen_dep.add(dedup_key)
                     departures.append({
@@ -500,13 +542,17 @@ def render_gate_radar(user_gate, arrivals, departures, note=""):
             sections.append(f"ℹ️ {base_gate} Ana Kapı: " + ", ".join(html.escape(f['flight_no']) for f in base_flights[:3]))
 
     # 🚖 Potansiyel Aktarma / Taksi Gidişleri (İlk 2 Saat)
+    CLOSED_STATUSES = {"kapı kapandı", "kapi kapandi", "iptal", "kalktı", "kalkti", "uçak kalktı", "ucak kalkti", "gitti"}
     pot_deps = []
     for d in departures:
         dep_g = exact_gate(d.get("gate"))
         if not dep_g or dep_g.startswith("G") or dep_g in relevant_gates:
             continue
+        st = str(d.get("status") or "").strip().lower()
+        if st in CLOSED_STATUSES:
+            continue
         rem_min = (d["dep_time"] - now_ist).total_seconds() / 60.0
-        if 15 <= rem_min <= 120:
+        if 15 <= rem_min <= 130:
             w_min, dist_tag = calc_gate_dist(gate, dep_g)
             pot_deps.append((rem_min, d, dep_g, w_min))
 
@@ -545,6 +591,7 @@ def execute_proximity_radar(user_gate="F3", chat_id=None):
 def execute_departures_radar(pier=None, chat_id=None):
     now_ist, _, departures, _ = fetch_iga_direct_flights()
     curr_gate = CONFIG.get("user_gate", "F3")
+    CLOSED_STATUSES = {"kapı kapandı", "kapi kapandi", "iptal", "kalktı", "kalkti", "uçak kalktı", "ucak kalkti", "gitti"}
 
     active_deps = []
     for d in departures:
@@ -553,8 +600,11 @@ def execute_departures_radar(pier=None, chat_id=None):
             continue
         if pier and not gate.startswith(pier):
             continue
+        st = str(d.get("status") or "").strip().lower()
+        if st in CLOSED_STATUSES:
+            continue
         rem_min = (d["dep_time"] - now_ist).total_seconds() / 60.0
-        if 10 <= rem_min <= 130:
+        if 5 <= rem_min <= 140:
             w_min, dist_tag = calc_gate_dist(curr_gate, gate)
             active_deps.append((rem_min, d, gate, w_min, dist_tag))
 
