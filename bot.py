@@ -219,17 +219,19 @@ def fetch_iga_direct_flights():
             origin_iata = str(item.get("fromCityCode") or "").strip().upper()
             arr_dt = parse_iso_dt(item.get("estimatedDatetime")) or parse_iso_dt(item.get("scheduledDatetime"))
             if arr_dt:
-                flight_no = normalize_flight(item.get("flightNumber", "TK"))
+                raw_flight_no = str(item.get("flightNumber") or "TK").strip().upper()
+                flight_no = normalize_flight(raw_flight_no)
                 dedup_key = f"{origin_iata}_{arr_dt.strftime('%H%M')}_{flight_no}"
                 if dedup_key not in seen_arr:
                     seen_arr.add(dedup_key)
                     gate_raw = str(item.get("gate") or "").strip()
                     carousel = str(item.get("carousel") or "").strip()
 
-                    gate_val = manual_gate(flight_no) or exact_gate(gate_raw) or UNKNOWN_GATE
+                    gate_val = manual_gate(flight_no) or manual_gate(raw_flight_no) or exact_gate(gate_raw) or UNKNOWN_GATE
 
                     arrivals.append({
                         "flight_no": flight_no,
+                        "raw_flight_no": raw_flight_no,
                         "origin_name": str(item.get("fromCityName", "")).strip(),
                         "origin_iata": origin_iata,
                         "is_oss": origin_iata in OSS_AIRPORTS,
@@ -525,14 +527,16 @@ def background_arrival_gate_crawler():
                 candidates.sort(key=lambda x: x[0])
                 _, target_flight = candidates[0]
                 flight_no = target_flight["flight_no"]
+                query_flight = target_flight.get("raw_flight_no") or flight_no
                 flight_date = target_flight["arr_time"].date().isoformat()
                 recently_queried[flight_no] = now_mono
+                recently_queried[query_flight] = now_mono
 
                 if status.get("connected"):
                     crawler_stats["total_queries"] += 1
-                    crawler_stats["last_flight"] = flight_no
-                    print(f"[*] [Crawler] iGA WhatsApp sorgulanıyor: {flight_no} ({flight_date})...", flush=True)
-                    res = bridge_client.lookup(flight_no, date=flight_date, direction="arrival")
+                    crawler_stats["last_flight"] = query_flight
+                    print(f"[*] [Crawler] iGA WhatsApp sorgulanıyor: {query_flight} ({flight_date})...", flush=True)
+                    res = bridge_client.lookup(query_flight, date=flight_date, direction="arrival")
                     if res.get("status") in ["live_agent_active", "live_agent_redirect"]:
                         crawler_stats["last_status"] = "Canlı Destek Devrede (Durduruldu)"
                         print(f"[!] [Crawler] Canlı destek devrede algılandı: {res.get('error')}. 300 sn bekleniyor...", flush=True)
@@ -543,9 +547,10 @@ def background_arrival_gate_crawler():
                         gate = exact_gate(res.get("gate"))
                         if gate:
                             set_manual_gate(flight_no, gate)
+                            set_manual_gate(query_flight, gate)
                             crawler_stats["confirmed_gates"] += 1
                             crawler_stats["last_status"] = f"Doğrulandı ({gate})"
-                            print(f"[+] [Crawler] Kapı doğrulandı: {flight_no} -> {gate}", flush=True)
+                            print(f"[+] [Crawler] Kapı doğrulandı: {query_flight} -> {gate}", flush=True)
                     else:
                         st = res.get("status", "Açıklanmadı")
                         crawler_stats["last_status"] = f"Kapı yok ({st})"

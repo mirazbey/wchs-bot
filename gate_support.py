@@ -14,16 +14,34 @@ def normalize_flight(value):
     return re.sub(r"^([A-Z0-9]{2})0+(?=\d)", r"\1", re.sub(r"\s+", "", str(value)).upper())
 
 
-def exact_gate(value):
+def normalize_gate(value):
     gate = re.sub(r"\s+", "", str(value or "")).upper()
-    return gate if re.fullmatch(r"[A-G]\d{1,2}[A-Z]?", gate) else None
+    if not re.fullmatch(r"[A-G]\d{1,2}[A-Z]?", gate):
+        return None
+    # L (Left) = B, R (Right) = A
+    if gate.endswith("L"):
+        return gate[:-1] + "B"
+    elif gate.endswith("R"):
+        return gate[:-1] + "A"
+    return gate
+
+
+def exact_gate(value):
+    return normalize_gate(value)
 
 
 def gate_targets(value):
     gate = exact_gate(value)
     if not gate:
         return []
-    return [gate, gate + "A", gate + "B"] if gate[-1].isdigit() else [gate]
+    base = re.match(r"^[A-G]\d{1,2}", gate).group(0)
+    if gate == base:
+        return [base, base + "A", base + "B", base + "L", base + "R"]
+    elif gate.endswith("A"):
+        return [gate, base + "R"]
+    elif gate.endswith("B"):
+        return [gate, base + "L"]
+    return [gate]
 
 
 class GateBridgeClient:

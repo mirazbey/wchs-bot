@@ -55,7 +55,9 @@ function parseGate(text) {
   // Require a gate label or an explicit map destination; bag belts are not gates.
   const regex = /(?:ucus kapiniz|kapiniz|kapisi|kapi(?:\s*(?:numarasi|no))?|terminal\s*-\s*gate|(?:flight\s+)?gate(?:\s+(?:is|number))?|endstoreid\s*=)\s*[:：=\-*]*\s*([a-g]\s*\d{1,2}(?:\s*[a-z])?)(?![a-z0-9])/g;
   for (const match of normalized.matchAll(regex)) {
-    const gate = match[1].replace(/\s/g, '').toUpperCase();
+    let gate = match[1].replace(/\s/g, '').toUpperCase();
+    if (gate.endsWith('L')) gate = gate.slice(0, -1) + 'B';
+    else if (gate.endsWith('R')) gate = gate.slice(0, -1) + 'A';
     // A suffix separated from the number must be a standalone letter.
     if (/^[A-G]\d{1,2}[A-Z]?$/.test(gate)) gates.add(gate);
   }
@@ -122,7 +124,7 @@ class GateConversation {
     }
     const j = this.queue.shift(); this.active = j; j.startedAt = this.now();
     j.deadline = this.now() + this.totalMs;
-    this.sendStep(j, IGA_JID, { text: `${j.flight} uçuşunu takip etmek istiyorum` }, 'waiting_reply');
+    this.sendStep(j, IGA_JID, { text: j.flight }, 'waiting_reply');
   }
 
   arm(j) {
@@ -227,16 +229,17 @@ class GateConversation {
       this.logger?.('ignored_clock_skew', { timestamp, startedAt: j.startedAt });
       return;
     }
-    if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|nasil yardimci olabilirim/i.test(normalized)) {
+    if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|nasil yardimci olabilirim|kontrol sagladigimda|web sitemiz|inis yapmis durumda/i.test(normalized)) {
       this.logger?.('detected_live_agent_redirect', { flight: j?.flight });
-      this.liveAgentUntil = this.now() + 15 * 60 * 1000;
+      this.liveAgentUntil = this.now() + 30 * 60 * 1000;
       this.queue = [];
-      this.finish(j, { success: false, status: 'live_agent_redirect', gate: null, error: 'iGA canlı desteğe yönlendirdi. Mesaj gönderimi 15 dk durduruldu.' });
+      this.finish(j, { success: false, status: 'live_agent_redirect', gate: null, error: 'iGA canlı desteğe yönlendirdi. Mesaj gönderimi 30 dk durduruldu.' });
       return;
     }
     const flights = [...text.toUpperCase().matchAll(/\b([A-Z]{2}\s*\d{1,4})\b/g)].map(m => normalizeFlight(m[1]));
     if (flights.length && !flights.includes(j.flight)) {
-      this.logger?.('ignored_other_flight', { flights, expected: j.flight });
+      this.logger?.('detected_different_flight', { flights, expected: j.flight });
+      this.finish(j, { success: false, status: 'not_found', gate: null, error: `Uçuş bulunamadı (iGA ${flights.join(', ')} önerdi).` });
       return;
     }
     if (flights.includes(j.flight) || (quotedId && j.outbound.has(quotedId))) j.correlated = true;
