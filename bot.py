@@ -242,8 +242,16 @@ def fetch_iga_direct_flights():
     arrivals = []
     seen_arr = set()
     try:
-        data_arr = _post(nature=0, page_size=40)
+        start_arr_iso = (now_ist - timedelta(minutes=60)).strftime("%Y-%m-%dT%H:%M:%S")
+        data_arr = _post(nature=0, page_size=50, start_date=start_arr_iso)
         raw_arr = data_arr.get("result", {}).get("data", {}).get("flights", [])
+        last_arr_date = raw_arr[-1].get("scheduledDatetime") if raw_arr else ""
+        if last_arr_date:
+            try:
+                data_arr2 = _post(nature=0, page_size=50, start_date=last_arr_date, button="moreFlight")
+                raw_arr.extend(data_arr2.get("result", {}).get("data", {}).get("flights", []))
+            except Exception:
+                pass
         for item in raw_arr:
             origin_iata = str(item.get("fromCityCode") or "").strip().upper()
             arr_dt = parse_iso_dt(item.get("estimatedDatetime")) or parse_iso_dt(item.get("scheduledDatetime"))
@@ -530,9 +538,9 @@ def background_arrival_gate_crawler():
                     continue
 
                 delta_min = (arr_time - now_ist).total_seconds() / 60.0
-                # iGA WhatsApp kapı bilgisini SADECE uçak teker koyduktan sonra girer.
-                # Bu yüzden sadece inmiş (status == 'İndi' veya -35 ila +2 dk) uçuşları sorguluyoruz!
-                is_landed = (f.get("status") == "İndi") or (-35 <= delta_min <= 2)
+                # iGA WhatsApp kapı bilgisini uçak teker koyduktan sonra girer.
+                # Son 75 dk içinde inmiş veya inmek üzere olan uçuşları sorguluyoruz!
+                is_landed = (f.get("status") == "İndi" and delta_min >= -75) or (-45 <= delta_min <= 2)
                 if not is_landed:
                     continue
 
