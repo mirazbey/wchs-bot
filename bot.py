@@ -514,9 +514,10 @@ def background_arrival_gate_crawler():
                     continue
 
                 delta_min = (arr_time - now_ist).total_seconds() / 60.0
-                # Teker koyduktan sonra ~20 dk kapıya yanaşma payı (-25 dk)
-                # ve 15 dk içinde teker koyacak uçaklar (+15 dk)
-                if not (-25 <= delta_min <= 15):
+                # iGA WhatsApp kapı bilgisini SADECE uçak teker koyduktan sonra girer.
+                # Bu yüzden sadece inmiş (status == 'İndi' veya -35 ila +2 dk) uçuşları sorguluyoruz!
+                is_landed = (f.get("status") == "İndi") or (-35 <= delta_min <= 2)
+                if not is_landed:
                     continue
 
                 flight_no = f.get("flight_no") or ""

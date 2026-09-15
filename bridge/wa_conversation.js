@@ -257,10 +257,17 @@ class GateConversation {
         this.finish(j, { success: false, ...result, error: 'Tam kapı bilgisi alınamadı.' }); return;
       }
       j.partial = true;
+      j.partialPier = result.pier;
       if (!j.replied.has('partial')) {
         j.replied.add('partial'); j.state = 'waiting_exact_gate'; this.arm(j);
       }
       return;
+    }
+    if (/gorusmemizi sonlandiriyorum|ending our conversation|guncellemeleri/i.test(normalized)) {
+      if (j.partial && j.partialPier) {
+        this.finish(j, { success: true, status: 'confirmed', gate: j.partialPier });
+        return;
+      }
     }
     if (/kvkk/.test(normalized) && /onay|kabul/.test(normalized)) {
       if (!this.autoConsent) {
