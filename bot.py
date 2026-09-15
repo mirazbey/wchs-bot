@@ -462,11 +462,29 @@ def send_telegram(text: str, reply_markup=None, target_chat_id=None):
     except Exception as e:
         print(f"[!] Telegram gönderim hatası: {e}", flush=True)
 
-def update_telegram(text, message_id, chat_id=None):
+def answer_callback_query(callback_query_id):
+    if not callback_query_id:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/answerCallbackQuery"
+    payload = {"callback_query_id": callback_query_id}
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json; charset=utf-8"}
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            resp.read()
+    except Exception:
+        pass
+
+def update_telegram(text, message_id, reply_markup=None, chat_id=None):
     if not message_id:
-        return send_telegram(text, target_chat_id=chat_id)
+        return send_telegram(text, reply_markup=reply_markup, target_chat_id=chat_id)
     payload = {"chat_id": chat_id or TELEGRAM_CHAT_ID, "message_id": message_id,
                "text": text, "parse_mode": "HTML"}
+    if reply_markup is not None:
+        payload["reply_markup"] = reply_markup
     req = urllib.request.Request(
         f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/editMessageText",
         data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"})
@@ -541,7 +559,7 @@ def render_gate_radar(user_gate, arrivals, departures, note=""):
         if base_flights:
             sections.append(f"ℹ️ {base_gate} Ana Kapı: " + ", ".join(html.escape(f['flight_no']) for f in base_flights[:3]))
 
-    # 🚖 Potansiyel Aktarma / Taksi Gidişleri (İlk 2 Saat)
+    # 🚖 Potansiyel Aktarma / Taksi Gidişleri (Kapı Kapanışına Göre: Kalkıştan 20 dk önce kapanır!)
     CLOSED_STATUSES = {"kapı kapandı", "kapi kapandi", "iptal", "kalktı", "kalkti", "uçak kalktı", "ucak kalkti", "gitti"}
     pot_deps = []
     for d in departures:
@@ -551,21 +569,28 @@ def render_gate_radar(user_gate, arrivals, departures, note=""):
         st = str(d.get("status") or "").strip().lower()
         if st in CLOSED_STATUSES:
             continue
-        rem_min = (d["dep_time"] - now_ist).total_seconds() / 60.0
-        if 15 <= rem_min <= 130:
-            w_min, dist_tag = calc_gate_dist(gate, dep_g)
-            pot_deps.append((rem_min, d, dep_g, w_min))
+        rem_dep_min = (d["dep_time"] - now_ist).total_seconds() / 60.0
+        # Kapı kapanış süresi: Kalkıştan 20 dk önce!
+        rem_gate_min = rem_dep_min - 20
+        if rem_gate_min < 3 or rem_gate_min > 115:
+            continue
+        w_min, dist_tag = calc_gate_dist(gate, dep_g)
+        margin = int(rem_gate_min - w_min)
+        if margin < 0:
+            continue
+        pot_deps.append((rem_gate_min, d, dep_g, w_min, margin, rem_dep_min))
 
     pot_deps.sort(key=lambda x: x[0])
 
     pot_section = []
     if pot_deps:
-        pot_section.append("🚖 <b>Potansiyel Gidişler (İlk 2 Saat):</b>")
-        for rem_min, d, dep_g, w_min in pot_deps[:4]:
+        pot_section.append("🚖 <b>Potansiyel Gidişler (Kapı Kapanışına Göre):</b>")
+        for rem_gate_min, d, dep_g, w_min, margin, rem_dep_min in pot_deps[:4]:
             status_str = f" · <i>{d['status']}</i>" if d.get("status") else ""
+            pay_str = f"🚨 Pay: {margin} dk" if margin <= 10 else f"✅ Pay: {margin} dk"
             pot_section.append(
                 f"• 🚪 <b>{dep_g}</b> ➔ <b>{d['flight_no']}</b> · {html.escape(d['dest'])} · "
-                f"<b>{d['dep_time']:%H:%M}</b> ({int(rem_min)} dk{status_str}) [~{w_min} dk taksi]"
+                f"Kalkış: <b>{d['dep_time']:%H:%M}</b> (Kapanışa <b>{int(rem_gate_min)} dk</b>{status_str}) [~{w_min} dk taksi | {pay_str}]"
             )
         pot_section.append("💡 <i>Tüm liste için aşağıdaki <b>🛫 Gidişler</b> butonuna basabilirsin.</i>")
 
@@ -588,7 +613,7 @@ def execute_proximity_radar(user_gate="F3", chat_id=None):
     send_telegram(render_gate_radar(user_gate, arrivals, departures), target_chat_id=chat_id)
 
 
-def execute_departures_radar(pier=None, chat_id=None):
+def execute_departures_radar(pier=None, page=1, message_id=None, chat_id=None):
     now_ist, _, departures, _ = fetch_iga_direct_flights()
     curr_gate = CONFIG.get("user_gate", "F3")
     CLOSED_STATUSES = {"kapı kapandı", "kapi kapandi", "iptal", "kalktı", "kalkti", "uçak kalktı", "ucak kalkti", "gitti"}
@@ -603,35 +628,100 @@ def execute_departures_radar(pier=None, chat_id=None):
         st = str(d.get("status") or "").strip().lower()
         if st in CLOSED_STATUSES:
             continue
-        rem_min = (d["dep_time"] - now_ist).total_seconds() / 60.0
-        if 5 <= rem_min <= 140:
-            w_min, dist_tag = calc_gate_dist(curr_gate, gate)
-            active_deps.append((rem_min, d, gate, w_min, dist_tag))
+        rem_dep_min = (d["dep_time"] - now_ist).total_seconds() / 60.0
+        # Kapı kapanış süresi: Kalkıştan 20 dk önce kapanır!
+        rem_gate_min = rem_dep_min - 20
+        # Kapı kapanalı 2 dakikadan fazla olmuşsa veya 140 dakikadan fazlaysa listeye alma
+        if rem_gate_min < -2 or rem_dep_min > 140:
+            continue
+        w_min, dist_tag = calc_gate_dist(curr_gate, gate)
+        margin = int(rem_gate_min - w_min)
+        active_deps.append((rem_gate_min, d, gate, w_min, margin, rem_dep_min))
 
     active_deps.sort(key=lambda x: x[0])
 
+    total_count = len(active_deps)
+    PAGE_SIZE = 10
+    total_pages = max(1, (total_count + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(1, min(page, total_pages))
+
+    start_idx = (page - 1) * PAGE_SIZE
+    page_items = active_deps[start_idx : start_idx + PAGE_SIZE]
+
     pier_title = f"{pier} İskelesi " if pier else ""
     header = (
-        f"🛫 <b>DIŞ HATLAR GİDİŞ RADARI ({pier_title}İlk 2 Saat)</b>\n"
+        f"🛫 <b>DIŞ HATLAR GİDİŞ RADARI ({pier_title}Sayfa {page}/{total_pages})</b>\n"
         f"🕒 Saat: <b>{now_ist.strftime('%H:%M')}</b> | 📍 Konumun: <b>{curr_gate}</b>\n"
+        f"⚠️ <i>Kapılar kalkıştan 20 dk önce kapanır! Süreler kapanışa göredir.</i>\n"
         f"───────────────────────\n"
     )
 
-    if not active_deps:
+    if not page_items:
         msg = header + f"<i>Önümüzdeki 2 saat içinde {pier_title}kapısı belli aktif gidiş bulunamadı.</i>"
-        send_telegram(msg, target_chat_id=chat_id)
+        inline_keyboard = []
+        if pier:
+            inline_keyboard.append([{"text": "🌐 Tüm İskeleleri Göster", "callback_data": "DEP_PIER_ALL"}])
+        reply_markup = {"inline_keyboard": inline_keyboard} if inline_keyboard else None
+        if message_id:
+            update_telegram(msg, message_id, reply_markup=reply_markup, chat_id=chat_id)
+        else:
+            send_telegram(msg, reply_markup=reply_markup, target_chat_id=chat_id)
         return
 
     lines = []
-    for rem_min, d, gate, w_min, dist_tag in active_deps[:14]:
+    for rem_gate_min, d, gate, w_min, margin, rem_dep_min in page_items:
         status_suffix = f" · <i>{d['status']}</i>" if d.get("status") else ""
+        if rem_gate_min <= 0:
+            pay_str = "🚨 KAPI KAPANIYOR"
+            rem_str = "<b>Kapanıyor</b>"
+        elif margin < 0:
+            pay_str = f"🚨 {-margin} dk GEÇ"
+            rem_str = f"Kapanışa <b>{int(rem_gate_min)} dk</b>"
+        elif margin <= 10:
+            pay_str = f"🚨 Pay: {margin} dk"
+            rem_str = f"Kapanışa <b>{int(rem_gate_min)} dk</b>"
+        else:
+            pay_str = f"✅ Pay: {margin} dk"
+            rem_str = f"Kapanışa <b>{int(rem_gate_min)} dk</b>"
+
         lines.append(
             f"• 🚪 <b>{gate}</b> ➔ <b>{d['flight_no']}</b> · {html.escape(d['dest'])} · "
-            f"<b>{d['dep_time']:%H:%M}</b> (<b>{int(rem_min)} dk</b>{status_suffix}) [~{w_min} dk taksi]"
+            f"Kalkış: <b>{d['dep_time']:%H:%M}</b> ({rem_str}{status_suffix}) [~{w_min} dk taksi | {pay_str}]"
         )
 
-    footer = f"\n\n💡 <i>İskele bazlı hızlı filtre için: <code>A Gidiş</code>, <code>B Gidiş</code>, <code>D Gidiş</code>, <code>F Gidiş</code> yazabilirsin.</i>"
-    send_telegram(header + "\n".join(lines) + footer, target_chat_id=chat_id)
+    text = header + "\n".join(lines)
+
+    # Fonksiyonel İnline Butonlar
+    inline_keyboard = []
+    
+    # 1. Satır: Devamı / Sayfalama
+    nav_row = []
+    if page > 1:
+        nav_row.append({"text": "⬅️ Önceki Sayfa", "callback_data": f"DEP_P_{page-1}_{pier or 'ALL'}"})
+    if page < total_pages:
+        nav_row.append({"text": f"➕ Devamı ({page+1}/{total_pages}) ➔", "callback_data": f"DEP_P_{page+1}_{pier or 'ALL'}"})
+    if nav_row:
+        inline_keyboard.append(nav_row)
+
+    # 2. Satır: İskele Filtreleri
+    pier_row = [
+        {"text": "🅰️ A", "callback_data": "DEP_PIER_A"},
+        {"text": "🅱️ B", "callback_data": "DEP_PIER_B"},
+        {"text": "🇩 D", "callback_data": "DEP_PIER_D"},
+        {"text": "🇫 F", "callback_data": "DEP_PIER_F"}
+    ]
+    inline_keyboard.append(pier_row)
+
+    # 3. Satır: Filtre temizleme
+    if pier:
+        inline_keyboard.append([{"text": "🌐 Tüm İskeleleri Göster", "callback_data": "DEP_PIER_ALL"}])
+
+    reply_markup = {"inline_keyboard": inline_keyboard}
+
+    if message_id:
+        update_telegram(text, message_id, reply_markup=reply_markup, chat_id=chat_id)
+    else:
+        send_telegram(text, reply_markup=reply_markup, target_chat_id=chat_id)
 
 
 def background_arrival_gate_crawler():
@@ -870,8 +960,32 @@ def process_telegram_message(msg):
 def handle_telegram_message(msg):
     raw_text = msg.get("text", "").strip()
     chat_id = str(msg.get("chat", {}).get("id", TELEGRAM_CHAT_ID))
+    message_id = msg.get("message_id")
 
     if not raw_text:
+        return
+
+    # İnline Buton Yönlendirmeleri (Sayfalama ve İskele Filtreleri)
+    if raw_text.startswith("DEP_P_"):
+        parts = raw_text.split("_")
+        page = 1
+        pier = None
+        if len(parts) >= 3:
+            try:
+                page = int(parts[2])
+            except ValueError:
+                page = 1
+        if len(parts) >= 4:
+            p_val = parts[3].upper()
+            if p_val not in ["ALL", "TUMU", "NONE", ""]:
+                pier = p_val
+        execute_departures_radar(pier=pier, page=page, message_id=message_id, chat_id=chat_id)
+        return
+
+    if raw_text.startswith("DEP_PIER_"):
+        pier_code = raw_text.replace("DEP_PIER_", "").strip().upper()
+        pier = None if pier_code in ["ALL", "TUMU", "HEPSI", "NONE", ""] else pier_code
+        execute_departures_radar(pier=pier, page=1, message_id=message_id, chat_id=chat_id)
         return
 
     if raw_text in ["/start", "/help", "/yardim", "❓ Yardım", "yardım"]:
@@ -1024,8 +1138,10 @@ def handle_telegram_updates():
             if not msg:
                 cb = update.get("callback_query")
                 if cb:
-                    msg = cb.get("message", {})
+                    answer_callback_query(cb.get("id"))
+                    msg = dict(cb.get("message") or {})
                     msg["text"] = cb.get("data", "")
+                    msg["message_id"] = cb.get("message", {}).get("message_id")
                     msg["chat"] = cb.get("message", {}).get("chat", {})
             if not msg or not msg.get("text"):
                 continue

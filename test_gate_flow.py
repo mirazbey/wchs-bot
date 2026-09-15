@@ -107,10 +107,26 @@ class TestGateFlow(unittest.TestCase):
             'status': 'Boarding'
         }]
         radar = bot.render_gate_radar('B5', arrs, deps)
-        self.assertIn('Potansiyel Gidişler (İlk 2 Saat)', radar)
+        self.assertIn('Potansiyel Gidişler', radar)
         self.assertIn('TK1821', radar)
         self.assertIn('A11', radar)
         self.assertIn('taksi', radar)
+        self.assertIn('Kapanışa', radar)
+        self.assertIn('Pay:', radar)
+
+    def test_gate_closure_deadline_filtering(self):
+        now = bot.get_now_ist()
+        # 15 dk sonra kalkan uçağın kapısı 5 dk önce kapanmıştır (rem_gate_min = -5)
+        closed_flight = {
+            'flight_no': 'TK999',
+            'dest': 'ROMA',
+            'dep_time': now + timedelta(minutes=15),
+            'gate': 'B6',
+            'status': 'Son Çağrı'
+        }
+        radar = bot.render_gate_radar('B5', [], [closed_flight])
+        # Kapı kapanış süresi geçtiği için potansiyel aktarma listesine girmemeli
+        self.assertNotIn('TK999', radar)
 
     def test_departures_intent(self):
         intent1, a1, _ = bot.parse_user_intent('gidişler')
@@ -119,5 +135,72 @@ class TestGateFlow(unittest.TestCase):
         self.assertEqual(intent2, 'DEPARTURES_PIER')
         self.assertEqual(a2, 'A')
 
+    def test_departures_radar_pagination_and_closure(self):
+        now = bot.get_now_ist()
+        # 15 uçuş üretelim
+        mock_deps = []
+        for i in range(15):
+            mock_deps.append({
+                'flight_no': f'TK10{i:02d}',
+                'dest': f'CITY_{i}',
+                'dest_iata': f'C{i}',
+                'dep_time': now + timedelta(minutes=40 + i * 5),
+                'gate': f'A{i+1}',
+                'source_gate': f'A{i+1}',
+                'status': 'Boarding'
+            })
+        sent_messages = []
+        def fake_send(text, reply_markup=None, target_chat_id=None):
+            sent_messages.append({'text': text, 'markup': reply_markup})
+            return 999
+
+        orig_fetch = bot.fetch_iga_direct_flights
+        orig_send = bot.send_telegram
+        try:
+            bot.fetch_iga_direct_flights = lambda: (now, [], mock_deps, 'TEST')
+            bot.send_telegram = fake_send
+            bot.CONFIG['user_gate'] = 'A1'
+
+            bot.execute_departures_radar(pier='A', page=1)
+            self.assertEqual(len(sent_messages), 1)
+            msg = sent_messages[0]
+            self.assertIn('Sayfa 1/2', msg['text'])
+            self.assertIn('kalkıştan 20 dk önce', msg['text'])
+            # İlk uçuş kalkış 40 dk sonra -> Kapanışa 20 dk
+            self.assertIn('Kapanışa <b>20 dk</b>', msg['text'])
+            # Sayfa 1 için Devamı butonu olmalı
+            inline_kb = msg['markup']['inline_keyboard']
+            self.assertTrue(any('DEP_P_2_A' in btn.get('callback_data', '') for row in inline_kb for btn in row))
+            self.assertTrue(any('DEP_PIER_ALL' in btn.get('callback_data', '') for row in inline_kb for btn in row))
+        finally:
+            bot.fetch_iga_direct_flights = orig_fetch
+            bot.send_telegram = orig_send
+
+    def test_callback_query_routing(self):
+        called_args = []
+        orig_exec = bot.execute_departures_radar
+        try:
+            bot.execute_departures_radar = lambda pier=None, page=1, message_id=None, chat_id=None: called_args.append({
+                'pier': pier, 'page': page, 'message_id': message_id, 'chat_id': chat_id
+            })
+
+            # DEP_P_2_B
+            bot.handle_telegram_message({'text': 'DEP_P_2_B', 'message_id': 123, 'chat': {'id': 456}})
+            self.assertEqual(len(called_args), 1)
+            self.assertEqual(called_args[0], {'pier': 'B', 'page': 2, 'message_id': 123, 'chat_id': '456'})
+
+            # DEP_PIER_A
+            bot.handle_telegram_message({'text': 'DEP_PIER_A', 'message_id': 789, 'chat': {'id': 456}})
+            self.assertEqual(len(called_args), 2)
+            self.assertEqual(called_args[1], {'pier': 'A', 'page': 1, 'message_id': 789, 'chat_id': '456'})
+
+            # DEP_PIER_ALL
+            bot.handle_telegram_message({'text': 'DEP_PIER_ALL', 'message_id': 790, 'chat': {'id': 456}})
+            self.assertEqual(len(called_args), 3)
+            self.assertEqual(called_args[2], {'pier': None, 'page': 1, 'message_id': 790, 'chat_id': '456'})
+        finally:
+            bot.execute_departures_radar = orig_exec
+
 if __name__ == '__main__':
     unittest.main()
+
