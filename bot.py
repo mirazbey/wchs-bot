@@ -66,21 +66,34 @@ telegram_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="Telegram
 telegram_slots = threading.BoundedSemaphore(6)
 
 
-GATE_CACHE_TTL = 1800  # 30 dakika
+confirmed_arrival_store = {}
+GATE_CACHE_TTL = 3600  # 60 dakika hafızada tut
 
 
-def set_manual_gate(flight, gate):
-    flight = normalize_flight(flight)
-    custom_flight_gates[flight] = exact_gate(gate)
-    custom_gate_times[flight] = time.monotonic()
+def set_manual_gate(flight, gate, origin_name="", arr_time=None):
+    clean = normalize_flight(flight)
+    g = exact_gate(gate)
+    if not g:
+        return
+    now_m = time.monotonic()
+    custom_flight_gates[clean] = g
+    custom_gate_times[clean] = now_m
+    confirmed_arrival_store[clean] = {
+        "flight_no": clean,
+        "origin_name": origin_name,
+        "arr_time": arr_time or get_now_ist(),
+        "gate": g,
+        "time": now_m
+    }
 
 
 def manual_gate(flight):
-    flight = normalize_flight(flight)
-    if time.monotonic() - custom_gate_times.get(flight, -1e9) < GATE_CACHE_TTL:
-        return custom_flight_gates.get(flight)
-    custom_flight_gates.pop(flight, None)
-    custom_gate_times.pop(flight, None)
+    clean = normalize_flight(flight)
+    if time.monotonic() - custom_gate_times.get(clean, -1e9) < GATE_CACHE_TTL:
+        return custom_flight_gates.get(clean)
+    custom_flight_gates.pop(clean, None)
+    custom_gate_times.pop(clean, None)
+    confirmed_arrival_store.pop(clean, None)
     return None
 
 
@@ -412,8 +425,17 @@ def render_gate_radar(user_gate, arrivals, departures, note=""):
     has_any_flight = False
 
     for g in relevant_gates:
-        g_arrs = [f for f in arrivals if exact_gate(f.get("gate")) == g
-                  and -40 <= (f["arr_time"] - now_ist).total_seconds() / 60 <= 100]
+        matched_arrs = {}
+        for f in arrivals:
+            if exact_gate(f.get("gate")) == g and -60 <= (f["arr_time"] - now_ist).total_seconds() / 60 <= 120:
+                matched_arrs[f["flight_no"]] = f
+
+        now_mono = time.monotonic()
+        for f in list(confirmed_arrival_store.values()):
+            if exact_gate(f.get("gate")) == g and now_mono - f.get("time", 0) < GATE_CACHE_TTL:
+                matched_arrs[f["flight_no"]] = f
+
+        g_arrs = list(matched_arrs.values())
         g_arrs.sort(key=lambda f: abs((f["arr_time"] - now_ist).total_seconds()))
 
         g_deps = [f for f in departures if exact_gate(f.get("gate")) == g
@@ -546,8 +568,8 @@ def background_arrival_gate_crawler():
                     if res.get("success") and res.get("gate"):
                         gate = exact_gate(res.get("gate"))
                         if gate:
-                            set_manual_gate(flight_no, gate)
-                            set_manual_gate(query_flight, gate)
+                            set_manual_gate(flight_no, gate, origin_name=target_flight.get("origin_name", ""), arr_time=target_flight.get("arr_time"))
+                            set_manual_gate(query_flight, gate, origin_name=target_flight.get("origin_name", ""), arr_time=target_flight.get("arr_time"))
                             crawler_stats["confirmed_gates"] += 1
                             crawler_stats["last_status"] = f"Doğrulandı ({gate})"
                             print(f"[+] [Crawler] Kapı doğrulandı: {query_flight} -> {gate}", flush=True)

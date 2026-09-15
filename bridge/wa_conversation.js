@@ -216,10 +216,13 @@ class GateConversation {
     const { text, choices, quotedId } = readMessage(msg.message);
     const normalized = fold(text);
     if (!j) {
-      if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|nasil yardimci olabilirim|ibrahim bey|ulasıyor|ulasiyor/i.test(normalized)) {
-        this.liveAgentUntil = this.now() + 15 * 60 * 1000;
+      if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|nasil yardimci olabilirim|kontrol sagladigimda|web sitemiz|inis yapmis durumda|ibrahim bey|ulasıyor|ulasiyor/i.test(normalized)) {
+        this.liveAgentUntil = this.now() + 30 * 60 * 1000;
         this.queue = [];
         this.logger?.('detected_live_agent_while_idle', { text: (text || '').slice(0, 80) });
+      } else if (/gorusmemizi sonlandiriyorum|ending our conversation|tekrar konusmak isterseniz|chat again/i.test(normalized)) {
+        this.logger?.('auto_waking_up_after_ended_session', {});
+        setTimeout(() => this.send(IGA_JID, { text: 'Merhaba' }).catch(() => {}), 1500);
       }
       this.logger?.('ignored_no_active_job', { sender, text: (text || '').slice(0, 80) });
       this.pump(); return;
