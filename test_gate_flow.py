@@ -13,8 +13,8 @@ class TestGateFlow(unittest.TestCase):
         self.assertEqual(exact_gate('b5a'), 'B5A')
         self.assertEqual(exact_gate('f3'), 'F3')
         self.assertIsNone(exact_gate('xyz'))
-        self.assertEqual(gate_targets('a11'), ['A11', 'A11A', 'A11B'])
-        self.assertEqual(gate_targets('B5A'), ['B5A'])
+        self.assertEqual(gate_targets('a11'), ['A11', 'A11A', 'A11B', 'A11L', 'A11R'])
+        self.assertEqual(gate_targets('B5A'), ['B5A', 'B5R'])
 
     def test_base_gate_prominent_rendering(self):
         now = bot.get_now_ist()

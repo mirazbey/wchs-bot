@@ -101,12 +101,28 @@
     }
 
     const OSS_AIRPORTS = new Set([
-      "FRA", "MUC", "BER", "CDG", "AMS", "LHR", "LGW", "MAN", "BHX", "EDI",
-      "VIE", "ZRH", "GVA", "FCO", "MXP", "BLQ", "VCE", "NAP", "MAD", "BCN", 
-      "BRU", "DUS", "HAM", "STR", "PRG", "WAW", "BUD", "CPH", "ARN", "OSL", 
-      "HEL", "LIS", "ATH", "DUB", "LYS", "NCE", "MRS", "HAJ", "CGN", "NUE",
-      "JFK", "EWR", "ORD", "LAX", "MIA", "SFO", "BOS", "IAD", "IAH", "DFW", 
-      "ATL", "SEA", "DTW", "PHL", "DEN", "YYZ", "YUL", "YVR"
+      // Almanya
+      "FRA", "MUC", "BER", "DUS", "HAM", "STR", "CGN", "HAJ", "NUE", "LEJ", "BRE", "FMO", "PAD",
+      // Fransa
+      "CDG", "ORY", "LYS", "NCE", "MRS", "TLS", "BOD", "SXB", "NTE",
+      // Birleşik Krallık & İrlanda
+      "LHR", "LGW", "MAN", "BHX", "EDI", "STN", "LTN", "BRS", "NCL", "DUB",
+      // İsviçre & Avusturya
+      "ZRH", "GVA", "BSL", "VIE", "SZG", "INN",
+      // İtalya
+      "FCO", "MXP", "BLQ", "VCE", "NAP", "CTA", "PMO", "BRI", "PSA", "VRN", "TRN",
+      // İspanya & Portekiz
+      "MAD", "BCN", "AGP", "VLC", "BIO", "LIS", "OPO",
+      // Benelüks
+      "AMS", "BRU", "LUX",
+      // İskandinavya
+      "CPH", "BLL", "ARN", "GOT", "OSL", "BGO", "HEL", "KEF",
+      // Orta & Doğu Avrupa (AB / OSS)
+      "PRG", "WAW", "KRK", "BUD", "ATH", "SKG", "HER", "RHO", "OTP", "CLJ", "SOF", "VAR", "ZAG", "DBV", "SPU", "LJU", "RIX", "VNO", "TLL", "MLA",
+      // ABD
+      "JFK", "EWR", "ORD", "LAX", "MIA", "SFO", "BOS", "IAD", "IAH", "DFW", "ATL", "SEA", "DTW", "PHL", "DEN", "MCO",
+      // Kanada
+      "YYZ", "YUL", "YVR"
     ]);
 
     let state = {

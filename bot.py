@@ -35,12 +35,28 @@ OPENAI_KEY = os.environ.get("OPENAI_KEY", "")
 WA_BRIDGE_URL = os.environ.get("WA_BRIDGE_URL", "http://localhost:5005")
 
 OSS_AIRPORTS = {
-    "FRA", "MUC", "BER", "CDG", "AMS", "LHR", "LGW", "MAN", "BHX", "EDI",
-    "VIE", "ZRH", "GVA", "FCO", "MXP", "BLQ", "VCE", "NAP", "MAD", "BCN", 
-    "BRU", "DUS", "HAM", "STR", "PRG", "WAW", "BUD", "CPH", "ARN", "OSL", 
-    "HEL", "LIS", "ATH", "DUB", "LYS", "NCE", "MRS", "HAJ", "CGN", "NUE",
-    "JFK", "EWR", "ORD", "LAX", "MIA", "SFO", "BOS", "IAD", "IAH", "DFW", 
-    "ATL", "SEA", "DTW", "PHL", "DEN", "YYZ", "YUL", "YVR"
+    # Almanya
+    "FRA", "MUC", "BER", "DUS", "HAM", "STR", "CGN", "HAJ", "NUE", "LEJ", "BRE", "FMO", "PAD",
+    # Fransa
+    "CDG", "ORY", "LYS", "NCE", "MRS", "TLS", "BOD", "SXB", "NTE",
+    # Birlesik Krallik & Irlanda
+    "LHR", "LGW", "MAN", "BHX", "EDI", "STN", "LTN", "BRS", "NCL", "DUB",
+    # Isvicre & Avusturya
+    "ZRH", "GVA", "BSL", "VIE", "SZG", "INN",
+    # Italya
+    "FCO", "MXP", "BLQ", "VCE", "NAP", "CTA", "PMO", "BRI", "PSA", "VRN", "TRN",
+    # Ispanya & Portekiz
+    "MAD", "BCN", "AGP", "VLC", "BIO", "LIS", "OPO",
+    # Beneluks
+    "AMS", "BRU", "LUX",
+    # Iskandinavya
+    "CPH", "BLL", "ARN", "GOT", "OSL", "BGO", "HEL", "KEF",
+    # Orta & Dogu Avrupa (AB / OSS)
+    "PRG", "WAW", "KRK", "BUD", "ATH", "SKG", "HER", "RHO", "OTP", "CLJ", "SOF", "VAR", "ZAG", "DBV", "SPU", "LJU", "RIX", "VNO", "TLL", "MLA",
+    # ABD
+    "JFK", "EWR", "ORD", "LAX", "MIA", "SFO", "BOS", "IAD", "IAH", "DFW", "ATL", "SEA", "DTW", "PHL", "DEN", "MCO",
+    # Kanada
+    "YYZ", "YUL", "YVR"
 }
 
 CONFIG = {
@@ -523,6 +539,10 @@ def background_arrival_gate_crawler():
                 flight_no = f.get("flight_no") or ""
                 # SADECE Türk Hava Yolları (TK) Dış Hatlar Gelişleri!
                 if not flight_no.startswith("TK"):
+                    continue
+
+                # SADECE Avrupa / Birleşik Krallık / ABD-Kanada (OSS - Uygulama Olan) Uçuşlar!
+                if not f.get("is_oss"):
                     continue
 
                 # FIDS'te zaten doğrulanmış kapı var mı?
