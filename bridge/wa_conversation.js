@@ -254,8 +254,14 @@ class GateConversation {
         this.queue = [];
         this.logger?.('detected_live_agent_while_idle', { text: (text || '').slice(0, 80) });
       } else if (/gorusmemizi sonlandiriyorum|ending our conversation|tekrar konusmak isterseniz|chat again/i.test(normalized)) {
-        this.logger?.('auto_waking_up_after_ended_session', {});
-        setTimeout(() => this.send(IGA_JID, { text: 'Merhaba' }).catch(() => {}), 1500);
+        if (!this.active && !this.queue.length) {
+          this.logger?.('auto_waking_up_after_ended_session', {});
+          setTimeout(() => {
+            if (!this.active && !this.queue.length) {
+              this.send(IGA_JID, { text: 'Merhaba' }).catch(() => {});
+            }
+          }, 1500);
+        }
       } else if (/ucus tarihinizi sec|when is your flight|tarih secimi yapmaniz|hangi tarih/i.test(normalized)) {
         // Kullanıcı WhatsApp'tan manuel uçuş sormuşsa bile tarihi otomatik "Bugün" olarak seç
         this.logger?.('auto_selecting_today_while_idle', {});
@@ -313,7 +319,13 @@ class GateConversation {
         this.finish(j, { success: true, status: 'confirmed', gate: j.partialPier });
         return;
       }
-      setTimeout(() => this.send(IGA_JID, { text: 'Merhaba' }).catch(() => {}), 1500);
+      if (!this.queue.length) {
+        setTimeout(() => {
+          if (!this.active && !this.queue.length) {
+            this.send(IGA_JID, { text: 'Merhaba' }).catch(() => {});
+          }
+        }, 1500);
+      }
     }
     // Desteklenmeyen dil / Dil seçimi tespiti ("Kullandığınız dile destek veremiyoruz")
     if (/destek veremiyoruz|kullandiginiz dil|desteklenmeyen dil|dilinizi desteklemiyoruz|select.*language|lutfen.*dil|dil(?:i)?\s*sec/i.test(normalized)) {
@@ -338,7 +350,7 @@ class GateConversation {
       return this.reply(j, sender, msg, 'consent', choices.find(c => /onayliyorum|kabul ediyorum/.test(fold(c.title))), 'Onaylıyorum');
     }
     // Dil seçimi sonrası karşılama veya genel menü gelirse doğrudan uçuşu gönder
-    if (j.state === 'waiting_after_language' || /nasil yardimci olabilirim|hos geldiniz|size nasil|yardimci olmam/i.test(normalized)) {
+    if (j.state === 'waiting_after_language' || /yardimci olabilir|ana menu|hos geldiniz|size nasil|hangi konuda|yardimci olmam/i.test(normalized)) {
       if (!j.replied.has('flight_after_greeting')) {
         j.replied.add('flight_after_greeting');
         const flightChoice = choices.find(c => /ucus|flight|takip/.test(fold(c.title)));
