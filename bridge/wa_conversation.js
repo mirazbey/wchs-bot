@@ -44,7 +44,7 @@ function readMessage(message) {
     } catch { /* Unsupported choice is not guessed. */ }
   }
   const context = Object.values(m).find(v => v && typeof v === 'object' && v.contextInfo)?.contextInfo;
-  return { text: texts.join('\n'), choices: choices.filter(c => c.title && c.id), quotedId: context?.stanzaId };
+  return { text: texts.join('\n'), choices: choices.filter(c => c.title), quotedId: context?.stanzaId };
 }
 
 function parseGate(text) {
@@ -199,7 +199,7 @@ class GateConversation {
   }
 
   async handle(msg, type) {
-    if (type !== 'notify' || msg.key?.fromMe || !msg.message) return;
+    if (type !== 'notify' || !msg.message) return;
     const sender = msg.key?.remoteJid || '';
     const alt = msg.key?.remoteJidAlt || '';
     if (!this.isTrusted(sender, alt)) {
@@ -212,6 +212,39 @@ class GateConversation {
     if (!id || this.seen.has(id)) return;
     this.seen.add(id);
     if (this.seen.size > 1000) this.seen.delete(this.seen.values().next().value);
+
+    // Kullanıcı kendi telefonundan WhatsApp'a manuel uçuş kodu yazdıysa bunu da yakala
+    if (msg.key?.fromMe) {
+      const { text } = readMessage(msg.message);
+      const flightMatch = text.toUpperCase().match(/\b([A-Z0-9]{2}\s*\d{1,4})\b/);
+      if (flightMatch) {
+        const manualFlight = normalizeFlight(flightMatch[1]);
+        this.logger?.('detected_manual_flight_from_me', { flight: manualFlight });
+        if (!this.active || this.active.flight !== manualFlight) {
+          const date = istDate(new Date(this.now()));
+          const key = `${manualFlight}|${date}|arrival`;
+          const job = {
+            id: randomUUID(),
+            key,
+            flight: manualFlight,
+            date,
+            direction: 'arrival',
+            state: 'waiting_reply',
+            createdAt: this.now(),
+            startedAt: this.now(),
+            deadline: this.now() + this.totalMs,
+            replied: new Set(),
+            outbound: new Set(),
+            correlated: true
+          };
+          this.jobs.set(job.id, job);
+          this.active = job;
+          this.arm(job);
+        }
+      }
+      return;
+    }
+
     const j = this.active;
     const { text, choices, quotedId } = readMessage(msg.message);
     const normalized = fold(text);
@@ -223,6 +256,18 @@ class GateConversation {
       } else if (/gorusmemizi sonlandiriyorum|ending our conversation|tekrar konusmak isterseniz|chat again/i.test(normalized)) {
         this.logger?.('auto_waking_up_after_ended_session', {});
         setTimeout(() => this.send(IGA_JID, { text: 'Merhaba' }).catch(() => {}), 1500);
+      } else if (/ucus tarihinizi sec|when is your flight|tarih secimi yapmaniz|hangi tarih/i.test(normalized)) {
+        // Kullanıcı WhatsApp'tan manuel uçuş sormuşsa bile tarihi otomatik "Bugün" olarak seç
+        this.logger?.('auto_selecting_today_while_idle', {});
+        const todayChoice = choices.find(c => /bugun|today/i.test(fold(c.title)));
+        const textToSend = todayChoice?.title || 'Bugün';
+        setTimeout(() => this.send(IGA_JID, { text: textToSend }).catch(() => {}), 1000);
+      } else if (/destek veremiyoruz|kullandiginiz dil|desteklenmeyen dil|dilinizi desteklemiyoruz|select.*language|lutfen.*dil|dil(?:i)?\s*sec/i.test(normalized)) {
+        // Dil uyarısı gelirse otomatik "Türkçe" seç
+        this.logger?.('auto_selecting_turkish_while_idle', {});
+        const turkishChoice = choices.find(c => /turkce|turkish/i.test(fold(c.title)));
+        const textToSend = turkishChoice?.title || 'Türkçe';
+        setTimeout(() => this.send(IGA_JID, { text: textToSend }).catch(() => {}), 1000);
       }
       this.logger?.('ignored_no_active_job', { sender, text: (text || '').slice(0, 80) });
       this.pump(); return;
@@ -276,6 +321,22 @@ class GateConversation {
       const turkishChoice = choices.find(c => /turkce|turkish/.test(fold(c.title)));
       return this.reply(j, sender, msg, 'language', turkishChoice, 'Türkçe');
     }
+    const today = istDate(new Date(this.now()));
+    const offset = Math.round((Date.parse(j.date) - Date.parse(today)) / 86400000);
+    const dayPattern = offset === 0 ? /bugun|today/ : offset === -1 ? /dun|yesterday/ : offset === 1 ? /yarin|tomorrow/ : null;
+    const dateFallback = offset === 0 ? 'Bugün' : offset === -1 ? 'Dün' : offset === 1 ? 'Yarın' : 'Bugün';
+    const dateChoice = dayPattern && choices.find(c => dayPattern.test(fold(c.title)));
+    if (dateChoice || /ucus tarihinizi sec|when is your flight|ucusunuz ne zaman|hangi tarih/.test(normalized)) {
+      return this.reply(j, sender, msg, 'date', dateChoice, dateFallback);
+    }
+    const directionChoice = choices.find(c => (j.direction === 'arrival' ? /gelis|gelen|arrival/ : /gidis|giden|departure/).test(fold(c.title)));
+    if (directionChoice) return this.reply(j, sender, msg, 'direction', directionChoice, j.direction === 'arrival' ? 'Gelen' : 'Giden');
+    if (/kvkk/.test(normalized) && /onay|kabul/.test(normalized)) {
+      if (!this.autoConsent) {
+        this.finish(j, { success: false, status: 'consent_required', error: 'iGA WhatsApp hesabında KVKK onayı gerekiyor.' }); return;
+      }
+      return this.reply(j, sender, msg, 'consent', choices.find(c => /onayliyorum|kabul ediyorum/.test(fold(c.title))), 'Onaylıyorum');
+    }
     // Dil seçimi sonrası karşılama veya genel menü gelirse doğrudan uçuşu gönder
     if (j.state === 'waiting_after_language' || /nasil yardimci olabilirim|hos geldiniz|size nasil|yardimci olmam/i.test(normalized)) {
       if (!j.replied.has('flight_after_greeting')) {
@@ -287,22 +348,6 @@ class GateConversation {
         return this.reply(j, sender, msg, 'flight_code', null, j.flight);
       }
     }
-    if (/kvkk/.test(normalized) && /onay|kabul/.test(normalized)) {
-      if (!this.autoConsent) {
-        this.finish(j, { success: false, status: 'consent_required', error: 'iGA WhatsApp hesabında KVKK onayı gerekiyor.' }); return;
-      }
-      return this.reply(j, sender, msg, 'consent', choices.find(c => /onayliyorum|kabul ediyorum/.test(fold(c.title))), 'Onaylıyorum');
-    }
-    const today = istDate(new Date(this.now()));
-    const offset = Math.round((Date.parse(j.date) - Date.parse(today)) / 86400000);
-    const dayPattern = offset === 0 ? /bugun|today/ : offset === -1 ? /dun|yesterday/ : offset === 1 ? /yarin|tomorrow/ : null;
-    const dateFallback = offset === 0 ? 'Bugün' : offset === -1 ? 'Dün' : offset === 1 ? 'Yarın' : 'Bugün';
-    const dateChoice = dayPattern && choices.find(c => dayPattern.test(fold(c.title)));
-    if (dateChoice || /ucus tarihinizi sec|when is your flight|ucusunuz ne zaman|hangi tarih/.test(normalized)) {
-      return this.reply(j, sender, msg, 'date', dateChoice, dateFallback);
-    }
-    const directionChoice = choices.find(c => (j.direction === 'arrival' ? /gelis|gelen|arrival/ : /gidis|giden|departure/).test(fold(c.title)));
-    if (directionChoice) return this.reply(j, sender, msg, 'direction', directionChoice, j.direction === 'arrival' ? 'Gelen' : 'Giden');
     if (/ucus (?:numara|kod).*(?:gir|yaz|paylas)|enter.*flight.*number/.test(normalized)) {
       if (/yeniden denemek|tekrar/.test(normalized)) {
         this.finish(j, { success: false, status: 'not_found', gate: null, error: 'Uçuş iGA sisteminde bulunamadı.' });
