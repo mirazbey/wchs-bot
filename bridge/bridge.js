@@ -2,6 +2,7 @@ const express = require('express');
 const QRCode = require('qrcode');
 const pino = require('pino');
 const path = require('node:path');
+const fs = require('node:fs');
 const { GateConversation, readMessage, istDate, IGA_JID } = require('./wa_conversation');
 
 const app = express();
@@ -63,15 +64,42 @@ async function connectToWhatsApp() {
   connection.ev.on('creds.update', saveCreds);
   connection.ev.on('connection.update', ({ connection: status, lastDisconnect, qr }) => {
     if (sock !== connection) return;
-    if (qr) { currentQR = qr; console.log('[WA] QR hazır: /qr'); }
+    if (qr) {
+      currentQR = qr;
+      logBridge('qr_generated', { qrSnippet: qr.slice(0, 30) });
+      console.log('[WA] QR hazır: /qr');
+    }
     if (status === 'close') {
       isConnected = false;
       engine.disconnect();
-      const reconnect = lastDisconnect?.error?.output?.statusCode !== baileys.DisconnectReason.loggedOut;
-      console.log('[WA] disconnected; reconnect:', reconnect);
-      if (reconnect) setTimeout(() => connectToWhatsApp().catch(() => console.error('[WA] reconnect_failed')), 3000);
+      const statusCode = lastDisconnect?.error?.output?.statusCode;
+      const isLoggedOut = statusCode === baileys.DisconnectReason.loggedOut || statusCode === 401;
+      logBridge('wa_disconnect', { statusCode, isLoggedOut });
+      console.log(`[WA] disconnected; statusCode: ${statusCode}; isLoggedOut: ${isLoggedOut}`);
+      if (isLoggedOut) {
+        currentQR = null;
+        const authDir = process.env.WA_AUTH_DIR || path.join(__dirname, 'auth_info');
+        console.log(`[WA] Oturum sonlandı (loggedOut). ${authDir} temizleniyor ve yeni QR hazırlanıyor...`);
+        try {
+          fs.rmSync(authDir, { recursive: true, force: true });
+        } catch (err) {
+          console.error('[WA] auth_info temizleme hatası:', err.message);
+        }
+        setTimeout(() => connectToWhatsApp().catch(e => console.error('[WA] reconnect_after_logout_failed:', e.message)), 2000);
+      } else {
+        setTimeout(() => connectToWhatsApp().catch(e => console.error('[WA] reconnect_failed:', e.message)), 3000);
+      }
     } else if (status === 'open') {
-      currentQR = null; isConnected = true; console.log('[WA] connected');
+      currentQR = null;
+      isConnected = true;
+      logBridge('wa_connected', {});
+      console.log('[WA] connected successfully');
+      // Oturumu Türkçe olarak başlat
+      setTimeout(() => {
+        if (sock && isConnected) {
+          sock.sendMessage(IGA_JID, { text: 'Merhaba' }).catch(() => {});
+        }
+      }, 2500);
     }
   });
   connection.ev.on('messages.upsert', ({ messages, type }) => {
@@ -249,6 +277,26 @@ app.post('/reset-live-agent', (req, res) => {
   engine.liveAgentUntil = 0;
   logBridge('live_agent_manually_reset', {});
   res.json({ success: true, liveAgentUntil: 0 });
+});
+
+app.all('/reset-auth', async (req, res) => {
+  try {
+    isConnected = false;
+    currentQR = null;
+    engine.disconnect();
+    if (sock) {
+      try { sock.end(undefined); } catch {}
+      sock = null;
+    }
+    const authDir = process.env.WA_AUTH_DIR || path.join(__dirname, 'auth_info');
+    fs.rmSync(authDir, { recursive: true, force: true });
+    logBridge('auth_manually_reset', {});
+    console.log('[WA] /reset-auth çağrıldı. auth_info temizlendi, yeniden bağlanılıyor...');
+    setTimeout(() => connectToWhatsApp().catch(e => console.error('[WA] restart_after_reset_failed:', e.message)), 1000);
+    res.redirect('/qr');
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Interactive raw test send

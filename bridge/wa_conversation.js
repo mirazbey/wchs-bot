@@ -216,7 +216,7 @@ class GateConversation {
     const { text, choices, quotedId } = readMessage(msg.message);
     const normalized = fold(text);
     if (!j) {
-      if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|nasil yardimci olabilirim|kontrol sagladigimda|web sitemiz|inis yapmis durumda|ibrahim bey|ulasıyor|ulasiyor/i.test(normalized)) {
+      if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|kontrol sagladigimda|web sitemiz|inis yapmis durumda|ibrahim bey|ulasıyor|ulasiyor/i.test(normalized)) {
         this.liveAgentUntil = this.now() + 30 * 60 * 1000;
         this.queue = [];
         this.logger?.('detected_live_agent_while_idle', { text: (text || '').slice(0, 80) });
@@ -232,7 +232,7 @@ class GateConversation {
       this.logger?.('ignored_clock_skew', { timestamp, startedAt: j.startedAt });
       return;
     }
-    if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|nasil yardimci olabilirim|kontrol sagladigimda|web sitemiz|inis yapmis durumda/i.test(normalized)) {
+    if (/musteri temsilci|canli destek|destek ekibi|temsilcimiz|operator|temsilciniz|baglandiniz|aktariyorum|aktarildiniz|kontrol sagladigimda|web sitemiz|inis yapmis durumda/i.test(normalized)) {
       this.logger?.('detected_live_agent_redirect', { flight: j?.flight });
       this.liveAgentUntil = this.now() + 30 * 60 * 1000;
       this.queue = [];
@@ -267,6 +267,24 @@ class GateConversation {
       if (j.partial && j.partialPier) {
         this.finish(j, { success: true, status: 'confirmed', gate: j.partialPier });
         return;
+      }
+      setTimeout(() => this.send(IGA_JID, { text: 'Merhaba' }).catch(() => {}), 1500);
+    }
+    // Desteklenmeyen dil / Dil seçimi tespiti ("Kullandığınız dile destek veremiyoruz")
+    if (/destek veremiyoruz|kullandiginiz dil|desteklenmeyen dil|dilinizi desteklemiyoruz|select.*language|lutfen.*dil|dil(?:i)?\s*sec/i.test(normalized)) {
+      this.logger?.('detected_language_prompt', { text: (text || '').slice(0, 80) });
+      const turkishChoice = choices.find(c => /turkce|turkish/.test(fold(c.title)));
+      return this.reply(j, sender, msg, 'language', turkishChoice, 'Türkçe');
+    }
+    // Dil seçimi sonrası karşılama veya genel menü gelirse doğrudan uçuşu gönder
+    if (j.state === 'waiting_after_language' || /nasil yardimci olabilirim|hos geldiniz|size nasil|yardimci olmam/i.test(normalized)) {
+      if (!j.replied.has('flight_after_greeting')) {
+        j.replied.add('flight_after_greeting');
+        const flightChoice = choices.find(c => /ucus|flight|takip/.test(fold(c.title)));
+        if (flightChoice) {
+          return this.reply(j, sender, msg, 'flight_menu', flightChoice, flightChoice.title);
+        }
+        return this.reply(j, sender, msg, 'flight_code', null, j.flight);
       }
     }
     if (/kvkk/.test(normalized) && /onay|kabul/.test(normalized)) {
